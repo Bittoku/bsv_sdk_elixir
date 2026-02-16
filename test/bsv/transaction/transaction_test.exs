@@ -37,7 +37,7 @@ defmodule BSV.Transaction.TransactionTest do
   test "serialize/deserialize roundtrip" do
     {:ok, tx} = Transaction.from_hex(@genesis_coinbase_hex)
     bin = Transaction.to_binary(tx)
-    assert {:ok, tx2} = Transaction.from_binary(bin)
+    assert {:ok, tx2, <<>>} = Transaction.from_binary(bin)
     assert Transaction.to_hex(tx2) == @genesis_coinbase_hex
   end
 

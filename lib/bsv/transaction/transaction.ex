@@ -26,11 +26,13 @@ defmodule BSV.Transaction do
       case rest do
         <<lock_time::little-32>> ->
           {:ok,
-           %__MODULE__{version: version, inputs: inputs, outputs: outputs, lock_time: lock_time}}
+           %__MODULE__{version: version, inputs: inputs, outputs: outputs, lock_time: lock_time},
+           <<>>}
 
-        <<lock_time::little-32, _extra::binary>> ->
+        <<lock_time::little-32, extra::binary>> ->
           {:ok,
-           %__MODULE__{version: version, inputs: inputs, outputs: outputs, lock_time: lock_time}}
+           %__MODULE__{version: version, inputs: inputs, outputs: outputs, lock_time: lock_time},
+           extra}
 
         _ ->
           {:error, :invalid_lock_time}
@@ -43,7 +45,11 @@ defmodule BSV.Transaction do
   @spec from_hex(String.t()) :: {:ok, t()} | {:error, term()}
   def from_hex(hex) do
     case Base.decode16(hex, case: :mixed) do
-      {:ok, bin} -> from_binary(bin)
+      {:ok, bin} ->
+        case from_binary(bin) do
+          {:ok, tx, _rest} -> {:ok, tx}
+          error -> error
+        end
       :error -> {:error, :invalid_hex}
     end
   end
@@ -66,6 +72,10 @@ defmodule BSV.Transaction do
 
   @spec tx_id(t()) :: <<_::256>>
   def tx_id(%__MODULE__{} = tx), do: Crypto.sha256d(to_binary(tx))
+
+  @doc "Compute the transaction ID as raw 32 bytes (internal byte order)."
+  @spec txid_binary(t()) :: binary()
+  def txid_binary(%__MODULE__{} = tx), do: tx_id(tx)
 
   @spec tx_id_hex(t()) :: String.t()
   def tx_id_hex(%__MODULE__{} = tx) do
