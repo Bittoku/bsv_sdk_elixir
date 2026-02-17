@@ -27,6 +27,7 @@ defmodule BSV.Transaction.P2PKH do
     %__MODULE__{private_key: key, sighash_flag: flag}
   end
 
+  @doc "Sign a transaction input, producing a P2PKH unlocking script."
   @impl BSV.Transaction.Template
   def sign(%__MODULE__{private_key: key, sighash_flag: flag}, tx, input_index) do
     input = Enum.at(tx.inputs, input_index)
@@ -49,6 +50,7 @@ defmodule BSV.Transaction.P2PKH do
     end
   end
 
+  @doc "Estimated unlocking script length in bytes (sig + pubkey ≈ 106)."
   @impl BSV.Transaction.Template
   def estimate_length(_, _, _), do: 106
 end

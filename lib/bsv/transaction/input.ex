@@ -19,9 +19,11 @@ defmodule BSV.Transaction.Input do
             unlocking_script: nil,
             source_output: nil
 
+  @doc "Create a new empty input with default values."
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
+  @doc "Parse an input from raw binary. Returns `{:ok, input, remaining_bytes}` on success."
   @spec from_binary(binary()) :: {:ok, t(), binary()} | {:error, term()}
   def from_binary(<<txid::binary-size(32), vout::little-32, rest::binary>>) do
     with {:ok, {script_len, rest}} <- VarInt.decode(rest),
@@ -50,6 +52,7 @@ defmodule BSV.Transaction.Input do
 
   def from_binary(_), do: {:error, :insufficient_data}
 
+  @doc "Serialize the input to raw binary (wire format)."
   @spec to_binary(t()) :: binary()
   def to_binary(%__MODULE__{} = input) do
     script_bin =
@@ -61,6 +64,7 @@ defmodule BSV.Transaction.Input do
       <<input.sequence_number::little-32>>
   end
 
+  @doc "Serialize the input with an empty unlocking script (for sighash computation)."
   @spec to_binary_cleared(t()) :: binary()
   def to_binary_cleared(%__MODULE__{} = input) do
     <<input.source_txid::binary-size(32), input.source_tx_out_index::little-32>> <>
@@ -68,10 +72,12 @@ defmodule BSV.Transaction.Input do
       <<input.sequence_number::little-32>>
   end
 
+  @doc "Get the satoshi value of the source output, or `nil` if not set."
   @spec source_satoshis(t()) :: non_neg_integer() | nil
   def source_satoshis(%__MODULE__{source_output: nil}), do: nil
   def source_satoshis(%__MODULE__{source_output: %Output{satoshis: s}}), do: s
 
+  @doc "Get the locking script of the source output, or `nil` if not set."
   @spec source_locking_script(t()) :: Script.t() | nil
   def source_locking_script(%__MODULE__{source_output: nil}), do: nil
   def source_locking_script(%__MODULE__{source_output: %Output{locking_script: s}}), do: s

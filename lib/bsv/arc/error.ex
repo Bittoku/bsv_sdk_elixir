@@ -9,6 +9,7 @@ defmodule BSV.ARC.Error do
           code: integer() | nil
         }
 
+  @doc "Return the error message string."
   @impl true
   def message(%__MODULE__{message: msg}), do: msg
 end

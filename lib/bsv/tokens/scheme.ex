@@ -9,6 +9,7 @@ defmodule BSV.Tokens.Authority do
   @derive Jason.Encoder
   defstruct [:m, public_keys: []]
 
+  @doc "Validate the authority configuration (m-of-n keys)."
   @spec validate(t()) :: :ok | {:error, BSV.Tokens.Error.t()}
   def validate(%__MODULE__{m: m, public_keys: keys}) do
     cond do
@@ -57,6 +58,7 @@ defmodule BSV.Tokens.Scheme do
     authority: %Authority{}
   ]
 
+  @doc "Serialize the token scheme to a JSON string."
   @spec to_json(t()) :: {:ok, binary()} | {:error, term()}
   def to_json(%__MODULE__{} = scheme) do
     Jason.encode(%{
@@ -71,6 +73,7 @@ defmodule BSV.Tokens.Scheme do
     })
   end
 
+  @doc "Deserialize a token scheme from a JSON string."
   @spec from_json(binary()) :: {:ok, t()} | {:error, term()}
   def from_json(json) when is_binary(json) do
     with {:ok, map} <- Jason.decode(json) do

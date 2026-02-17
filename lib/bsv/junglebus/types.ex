@@ -38,6 +38,7 @@ defmodule BSV.JungleBus.Types do
               data: [],
               merkle_proof: nil
 
+    @doc "Parse a Transaction from a decoded JSON map."
     @spec from_json(map()) :: t()
     def from_json(map) do
       %__MODULE__{
@@ -85,6 +86,7 @@ defmodule BSV.JungleBus.Types do
               bits: nil,
               synced: nil
 
+    @doc "Parse a BlockHeader from a decoded JSON map."
     @spec from_json(map()) :: t()
     def from_json(map) do
       %__MODULE__{
@@ -116,6 +118,7 @@ defmodule BSV.JungleBus.Types do
               total_received: nil,
               total_sent: nil
 
+    @doc "Parse an AddressInfo from a decoded JSON map."
     @spec from_json(map()) :: t()
     def from_json(map) do
       %__MODULE__{

@@ -40,6 +40,7 @@ defmodule BSV.Wallet.ProtoWallet do
 
   # --- BSV.Wallet behaviour ---
 
+  @doc "Derive a public key based on encryption args, or return the identity key."
   @impl BSV.Wallet
   def get_public_key(%__MODULE__{key_deriver: kd}, opts) do
     if Keyword.get(opts, :identity_key, false) do
@@ -53,6 +54,7 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
+  @doc "Encrypt plaintext using a derived symmetric key."
   @impl BSV.Wallet
   def encrypt(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, plaintext) do
     counterparty = default_counterparty_self(enc.counterparty)
@@ -62,6 +64,7 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
+  @doc "Decrypt ciphertext using a derived symmetric key."
   @impl BSV.Wallet
   def decrypt(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, ciphertext) do
     counterparty = default_counterparty_self(enc.counterparty)
@@ -71,6 +74,7 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
+  @doc "Create a DER-encoded signature using a derived private key."
   @impl BSV.Wallet
   def create_signature(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, data, hash_to_sign) do
     data_hash = if hash_to_sign != nil and byte_size(hash_to_sign) > 0 do
@@ -86,6 +90,7 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
+  @doc "Verify a DER-encoded signature using a derived public key."
   @impl BSV.Wallet
   def verify_signature(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, data, hash_to_verify, signature, opts) do
     if (data == nil or data == <<>>) and (hash_to_verify == nil or hash_to_verify == <<>>) do
@@ -106,6 +111,7 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
+  @doc "Create an HMAC-SHA256 using a derived symmetric key."
   @impl BSV.Wallet
   def create_hmac(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, data) do
     counterparty = default_counterparty_self(enc.counterparty)
@@ -116,6 +122,7 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
+  @doc "Verify an HMAC-SHA256 using a derived symmetric key."
   @impl BSV.Wallet
   def verify_hmac(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, data, hmac) do
     counterparty = default_counterparty_self(enc.counterparty)

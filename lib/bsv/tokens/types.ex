@@ -28,6 +28,7 @@ defmodule BSV.Tokens.DstasSpendType do
 
   @type t :: :transfer | :freeze_unfreeze | :confiscation | :swap_cancellation
 
+  @doc "Convert a spend type atom to its wire-format byte value."
   @spec to_byte(t()) :: byte()
   def to_byte(:transfer), do: 1
   def to_byte(:freeze_unfreeze), do: 2

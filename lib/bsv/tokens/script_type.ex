@@ -3,6 +3,7 @@ defmodule BSV.Tokens.ScriptType do
 
   @type t :: :p2pkh | :stas | :stas_btg | :dstas | :op_return | :unknown
 
+  @doc "Convert a script type atom to its human-readable string representation."
   @spec to_string(t()) :: String.t()
   def to_string(:p2pkh), do: "P2PKH"
   def to_string(:stas), do: "STAS"

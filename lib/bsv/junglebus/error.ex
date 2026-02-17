@@ -9,6 +9,7 @@ defmodule BSV.JungleBus.Error do
           status_code: non_neg_integer() | nil
         }
 
+  @doc "Return the error message string."
   @impl true
   def message(%__MODULE__{message: msg}), do: msg
 end

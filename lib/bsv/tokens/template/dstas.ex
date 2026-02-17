@@ -19,12 +19,14 @@ defmodule BSV.Tokens.Template.Dstas do
           sighash_flag: non_neg_integer()
         }
 
+  @doc "Create a DSTAS unlocker struct with the given private key and spend type."
   @spec unlock(PrivateKey.t(), BSV.Tokens.DstasSpendType.t(), keyword()) :: t()
   def unlock(%PrivateKey{} = key, spend_type, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
     %__MODULE__{private_key: key, spend_type: spend_type, sighash_flag: flag}
   end
 
+  @doc "Sign a DSTAS input, producing a P2PKH-style unlocking script."
   @impl BSV.Transaction.Template
   def sign(%__MODULE__{private_key: key, sighash_flag: flag}, tx, input_index) do
     input = Enum.at(tx.inputs, input_index)
@@ -47,6 +49,7 @@ defmodule BSV.Tokens.Template.Dstas do
     end
   end
 
+  @doc "Estimated unlocking script length in bytes."
   @impl BSV.Transaction.Template
   def estimate_length(_, _, _), do: 106
 end

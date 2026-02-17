@@ -14,9 +14,11 @@ defmodule BSV.Transaction.Output do
             locking_script: %Script{},
             change: false
 
+  @doc "Create a new empty output with default values."
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
+  @doc "Parse an output from raw binary. Returns `{:ok, output, remaining_bytes}` on success."
   @spec from_binary(binary()) :: {:ok, t(), binary()} | {:error, term()}
   def from_binary(<<satoshis::little-64, rest::binary>>) do
     with {:ok, {script_len, rest}} <- VarInt.decode(rest),
@@ -30,12 +32,14 @@ defmodule BSV.Transaction.Output do
 
   def from_binary(_), do: {:error, :insufficient_data}
 
+  @doc "Serialize the output to raw binary (wire format)."
   @spec to_binary(t()) :: binary()
   def to_binary(%__MODULE__{satoshis: satoshis, locking_script: script}) do
     script_bin = Script.to_binary(script)
     <<satoshis::little-64>> <> VarInt.encode(byte_size(script_bin)) <> script_bin
   end
 
+  @doc "Return the locking script as a hex string."
   @spec locking_script_hex(t()) :: String.t()
   def locking_script_hex(%__MODULE__{locking_script: script}), do: Script.to_hex(script)
 end

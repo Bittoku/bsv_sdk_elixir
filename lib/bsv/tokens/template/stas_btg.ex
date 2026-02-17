@@ -20,6 +20,7 @@ defmodule BSV.Tokens.Template.StasBtg do
           sighash_flag: non_neg_integer()
         }
 
+  @doc "Create a STAS-BTG Path A (BTG proof) unlocker from a private key and previous raw transaction."
   @spec unlock(PrivateKey.t(), binary(), non_neg_integer(), keyword()) :: t()
   def unlock(%PrivateKey{} = key, prev_raw_tx, prev_vout, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
@@ -32,6 +33,7 @@ defmodule BSV.Tokens.Template.StasBtg do
     }
   end
 
+  @doc "Sign a STAS-BTG input using Path A (BTG proof), producing `<sig> <pubkey> <prefix> <output> <suffix> OP_TRUE`."
   @impl BSV.Transaction.Template
   def sign(
         %__MODULE__{
@@ -76,6 +78,7 @@ defmodule BSV.Tokens.Template.StasBtg do
     end
   end
 
+  @doc "Estimated unlocking script length including BTG proof data."
   @impl BSV.Transaction.Template
   def estimate_length(%__MODULE__{prev_raw_tx: prev_raw_tx}, _tx, _input_index) do
     # Base sig+pubkey: ~107 bytes
@@ -105,6 +108,7 @@ defmodule BSV.Tokens.Template.StasBtgCheckpoint do
           sighash_flag: non_neg_integer()
         }
 
+  @doc "Create a STAS-BTG Path B (checkpoint attestation) unlocker from owner and issuer private keys."
   @spec unlock(PrivateKey.t(), PrivateKey.t(), keyword()) :: t()
   def unlock(%PrivateKey{} = owner_key, %PrivateKey{} = issuer_key, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
@@ -116,6 +120,7 @@ defmodule BSV.Tokens.Template.StasBtgCheckpoint do
     }
   end
 
+  @doc "Sign a STAS-BTG input using Path B (checkpoint attestation)."
   @impl BSV.Transaction.Template
   def sign(
         %__MODULE__{
@@ -160,6 +165,7 @@ defmodule BSV.Tokens.Template.StasBtgCheckpoint do
     end
   end
 
+  @doc "Estimated checkpoint unlocking script length in bytes."
   @impl BSV.Transaction.Template
   def estimate_length(_template, _tx, _input_index), do: 217
 end

@@ -16,9 +16,11 @@ defmodule BSV.Transaction do
             outputs: [],
             lock_time: 0
 
+  @doc "Create a new empty transaction."
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
+  @doc "Parse a transaction from raw binary. Returns `{:ok, tx, remaining_bytes}` on success."
   @spec from_binary(binary()) :: {:ok, t(), binary()} | {:error, term()}
   def from_binary(<<version::little-32, rest::binary>>) do
     with {:ok, inputs, rest} <- parse_inputs(rest),
@@ -42,6 +44,7 @@ defmodule BSV.Transaction do
 
   def from_binary(_), do: {:error, :insufficient_data}
 
+  @doc "Parse a transaction from a hex-encoded string."
   @spec from_hex(String.t()) :: {:ok, t()} | {:error, term()}
   def from_hex(hex) do
     case Base.decode16(hex, case: :mixed) do
@@ -54,6 +57,7 @@ defmodule BSV.Transaction do
     end
   end
 
+  @doc "Serialize the transaction to raw binary (wire format)."
   @spec to_binary(t()) :: binary()
   def to_binary(%__MODULE__{} = tx) do
     inputs_bin =
@@ -67,9 +71,11 @@ defmodule BSV.Transaction do
     <<tx.version::little-32>> <> inputs_bin <> outputs_bin <> <<tx.lock_time::little-32>>
   end
 
+  @doc "Serialize the transaction to a lowercase hex string."
   @spec to_hex(t()) :: String.t()
   def to_hex(%__MODULE__{} = tx), do: tx |> to_binary() |> Base.encode16(case: :lower)
 
+  @doc "Compute the 32-byte transaction ID (double-SHA256, internal byte order)."
   @spec tx_id(t()) :: <<_::256>>
   def tx_id(%__MODULE__{} = tx), do: Crypto.sha256d(to_binary(tx))
 
@@ -77,6 +83,7 @@ defmodule BSV.Transaction do
   @spec txid_binary(t()) :: binary()
   def txid_binary(%__MODULE__{} = tx), do: tx_id(tx)
 
+  @doc "Compute the transaction ID as a hex string in display order (byte-reversed)."
   @spec tx_id_hex(t()) :: String.t()
   def tx_id_hex(%__MODULE__{} = tx) do
     tx
@@ -87,16 +94,19 @@ defmodule BSV.Transaction do
     |> Base.encode16(case: :lower)
   end
 
+  @doc "Append an input to the transaction."
   @spec add_input(t(), Input.t()) :: t()
   def add_input(%__MODULE__{} = tx, %Input{} = input) do
     %{tx | inputs: tx.inputs ++ [input]}
   end
 
+  @doc "Append an output to the transaction."
   @spec add_output(t(), Output.t()) :: t()
   def add_output(%__MODULE__{} = tx, %Output{} = output) do
     %{tx | outputs: tx.outputs ++ [output]}
   end
 
+  @doc "Add an input from hex-encoded txid, vout, locking script, and satoshi amount."
   @spec add_input_from(t(), String.t(), non_neg_integer(), String.t(), non_neg_integer()) ::
           {:ok, t()} | {:error, term()}
   def add_input_from(%__MODULE__{} = tx, prev_tx_id_hex, vout, prev_locking_script_hex, satoshis) do
@@ -112,6 +122,7 @@ defmodule BSV.Transaction do
     end
   end
 
+  @doc "Sum the satoshi values of all source outputs referenced by inputs."
   @spec total_input_satoshis(t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def total_input_satoshis(%__MODULE__{inputs: inputs}) do
     Enum.reduce_while(inputs, {:ok, 0}, fn input, {:ok, acc} ->
@@ -122,11 +133,13 @@ defmodule BSV.Transaction do
     end)
   end
 
+  @doc "Sum the satoshi values of all outputs."
   @spec total_output_satoshis(t()) :: non_neg_integer()
   def total_output_satoshis(%__MODULE__{outputs: outputs}) do
     Enum.reduce(outputs, 0, fn %Output{satoshis: s}, acc -> acc + s end)
   end
 
+  @doc "Check if this is a coinbase transaction (null txid input with vout 0xFFFFFFFF)."
   @spec is_coinbase?(t()) :: boolean()
   def is_coinbase?(%__MODULE__{inputs: [%Input{source_txid: txid, source_tx_out_index: vout}]}) do
     txid == <<0::256>> and vout == 0xFFFFFFFF
@@ -134,9 +147,11 @@ defmodule BSV.Transaction do
 
   def is_coinbase?(_), do: false
 
+  @doc "Compute the serialized size of the transaction in bytes."
   @spec size(t()) :: non_neg_integer()
   def size(%__MODULE__{} = tx), do: byte_size(to_binary(tx))
 
+  @doc "Compute the BIP-143 signature hash for the input at `input_index` using the given sighash flag."
   @spec calc_input_signature_hash(t(), non_neg_integer(), non_neg_integer()) ::
           {:ok, <<_::256>>} | {:error, term()}
   def calc_input_signature_hash(%__MODULE__{} = tx, input_index, sighash_flag) do

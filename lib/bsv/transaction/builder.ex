@@ -5,9 +5,11 @@ defmodule BSV.Transaction.Builder do
   alias BSV.Transaction.{Output, P2PKH}
   alias BSV.Script
 
+  @doc "Create a new empty transaction."
   @spec new() :: Transaction.t()
   def new, do: Transaction.new()
 
+  @doc "Add an input from hex-encoded txid, vout, locking script hex, and satoshi amount. Raises on error."
   @spec add_input(Transaction.t(), String.t(), non_neg_integer(), String.t(), non_neg_integer()) ::
           Transaction.t()
   def add_input(%Transaction{} = tx, prev_txid_hex, vout, locking_script_hex, satoshis) do
@@ -17,6 +19,7 @@ defmodule BSV.Transaction.Builder do
     end
   end
 
+  @doc "Add a P2PKH output paying to the given Base58Check address. Raises on invalid address."
   @spec add_p2pkh_output(Transaction.t(), String.t(), non_neg_integer()) :: Transaction.t()
   def add_p2pkh_output(%Transaction{} = tx, address_string, satoshis) do
     case P2PKH.lock(address_string) do
@@ -28,17 +31,20 @@ defmodule BSV.Transaction.Builder do
     end
   end
 
+  @doc "Add an OP_RETURN output containing the given data pushes (0 satoshis)."
   @spec add_op_return_output(Transaction.t(), [binary()]) :: Transaction.t()
   def add_op_return_output(%Transaction{} = tx, data_list) when is_list(data_list) do
     script = Script.op_return(data_list)
     Transaction.add_output(tx, %Output{satoshis: 0, locking_script: script})
   end
 
+  @doc "Append a pre-built output to the transaction."
   @spec add_output(Transaction.t(), Output.t()) :: Transaction.t()
   def add_output(%Transaction{} = tx, %Output{} = output) do
     Transaction.add_output(tx, output)
   end
 
+  @doc "Sign a single input using the given signing template (e.g. `P2PKH`, `Stas`)."
   @spec sign_input(Transaction.t(), non_neg_integer(), struct()) ::
           {:ok, Transaction.t()} | {:error, term()}
   def sign_input(%Transaction{} = tx, input_index, template) do
@@ -56,6 +62,7 @@ defmodule BSV.Transaction.Builder do
     end
   end
 
+  @doc "Sign all inputs using the same signing template."
   @spec sign_all_inputs(Transaction.t(), struct()) ::
           {:ok, Transaction.t()} | {:error, term()}
   def sign_all_inputs(%Transaction{} = tx, template) do
@@ -67,6 +74,7 @@ defmodule BSV.Transaction.Builder do
     end)
   end
 
+  @doc "Validate and finalize the transaction. Returns error if inputs or outputs are missing."
   @spec build(Transaction.t()) :: {:ok, Transaction.t()} | {:error, term()}
   def build(%Transaction{} = tx) do
     cond do
