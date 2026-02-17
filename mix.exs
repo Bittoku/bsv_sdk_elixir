@@ -30,7 +30,7 @@ defmodule BSV.MixProject do
       links: %{
         "GitHub" => "https://github.com/bsv-sdk/bsv_sdk_elixir"
       },
-      maintainers: ["BSV SDK Team"],
+      maintainers: ["Jerry David Chan"],
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE)
     ]
   end
