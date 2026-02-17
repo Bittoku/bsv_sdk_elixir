@@ -42,5 +42,12 @@ defmodule BSV.Script.AddressTest do
     test "returns error for invalid address" do
       assert {:error, _} = Address.to_script("invalidaddress")
     end
+
+    test "returns error for unsupported address version" do
+      # Encode with version 0x05 (P2SH) which is not supported
+      payload = :crypto.strong_rand_bytes(20)
+      addr = BSV.Base58.check_encode(payload, 0x05)
+      assert {:error, :unsupported_address} = Address.to_script(addr)
+    end
   end
 end

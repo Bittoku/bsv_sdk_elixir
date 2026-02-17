@@ -50,13 +50,8 @@ defmodule BSV.SPV.MerklePath do
     {:ok, {block_height, rest}} = VarInt.decode(data)
     <<tree_height::8, rest2::binary>> = rest
 
-    case read_levels(rest2, tree_height, []) do
-      {:ok, path, _rest} ->
-        {:ok, %__MODULE__{block_height: block_height, path: path}}
-
-      {:error, _} = err ->
-        err
-    end
+    {:ok, path, _rest} = read_levels(rest2, tree_height, [])
+    {:ok, %__MODULE__{block_height: block_height, path: path}}
   end
 
   @doc "Serialize to BRC-74 binary format."
@@ -123,14 +118,9 @@ defmodule BSV.SPV.MerklePath do
   defp read_levels(data, n, acc) do
     {:ok, {n_leaves, rest}} = VarInt.decode(data)
 
-    case read_leaves(rest, n_leaves, []) do
-      {:ok, level, rest2} ->
-        sorted = Enum.sort_by(level, & &1.offset)
-        read_levels(rest2, n - 1, [sorted | acc])
-
-      error ->
-        error
-    end
+    {:ok, level, rest2} = read_leaves(rest, n_leaves, [])
+    sorted = Enum.sort_by(level, & &1.offset)
+    read_levels(rest2, n - 1, [sorted | acc])
   end
 
   defp read_leaves(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}

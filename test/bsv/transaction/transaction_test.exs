@@ -66,4 +66,56 @@ defmodule BSV.Transaction.TransactionTest do
     {:ok, tx} = Transaction.from_hex(@genesis_coinbase_hex)
     assert Transaction.size(tx) == byte_size(Base.decode16!(@genesis_coinbase_hex, case: :mixed))
   end
+
+  test "from_binary with insufficient data" do
+    assert {:error, :insufficient_data} = Transaction.from_binary(<<1, 2, 3>>)
+  end
+
+  test "from_hex with invalid hex" do
+    assert {:error, :invalid_hex} = Transaction.from_hex("not_hex!")
+  end
+
+  test "from_binary with extra data" do
+    {:ok, tx} = Transaction.from_hex(@genesis_coinbase_hex)
+    bin = Transaction.to_binary(tx) <> <<0xFF>>
+    assert {:ok, _tx2, <<0xFF>>} = Transaction.from_binary(bin)
+  end
+
+  test "total_input_satoshis with missing source_output" do
+    tx = %Transaction{inputs: [BSV.Transaction.Input.new()]}
+    assert {:error, :missing_source_output} = Transaction.total_input_satoshis(tx)
+  end
+
+  test "add_output" do
+    tx = Transaction.new()
+    output = BSV.Transaction.Output.new()
+    tx2 = Transaction.add_output(tx, output)
+    assert length(tx2.outputs) == 1
+  end
+
+  test "add_input" do
+    tx = Transaction.new()
+    input = BSV.Transaction.Input.new()
+    tx2 = Transaction.add_input(tx, input)
+    assert length(tx2.inputs) == 1
+  end
+
+  test "add_input_from with invalid txid hex" do
+    assert {:error, :invalid_txid_hex} = Transaction.add_input_from(Transaction.new(), "short", 0, "76a91400000000000000000000000000000000000000008ac", 1000)
+  end
+
+  test "txid_binary returns 32 bytes" do
+    {:ok, tx} = Transaction.from_hex(@genesis_coinbase_hex)
+    assert byte_size(Transaction.txid_binary(tx)) == 32
+  end
+
+  test "calc_input_signature_hash with missing source_output" do
+    tx = %Transaction{inputs: [BSV.Transaction.Input.new()]}
+    assert {:error, :missing_source_output} = Transaction.calc_input_signature_hash(tx, 0, 0x41)
+  end
+
+  test "to_hex roundtrip" do
+    {:ok, tx} = Transaction.from_hex(@genesis_coinbase_hex)
+    assert Transaction.to_hex(tx) == @genesis_coinbase_hex
+  end
 end

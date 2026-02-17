@@ -29,4 +29,17 @@ defmodule BSV.ChainHashTest do
   test "from_hex! raises on invalid" do
     assert_raise ArgumentError, fn -> BSV.ChainHash.from_hex!("invalid") end
   end
+
+  test "from_hex! success" do
+    hash = BSV.ChainHash.from_hex!(@genesis_hex)
+    assert BSV.ChainHash.to_hex(hash) == @genesis_hex
+  end
+
+  test "from_hex with wrong length" do
+    assert {:error, "hex must be 64 characters"} = BSV.ChainHash.from_hex("aabb")
+  end
+
+  test "from_hex with invalid hex chars" do
+    assert {:error, "invalid hex"} = BSV.ChainHash.from_hex(String.duplicate("ZZ", 32))
+  end
 end

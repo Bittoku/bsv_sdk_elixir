@@ -35,6 +35,30 @@ defmodule BSV.Base58Test do
     assert {:error, _} = BSV.Base58.decode("0OIl")
   end
 
+  test "decode! raises on invalid" do
+    assert_raise ArgumentError, fn -> BSV.Base58.decode!("0OIl") end
+  end
+
+  test "check_decode! success" do
+    payload = :crypto.strong_rand_bytes(20)
+    encoded = BSV.Base58.check_encode(payload, 0x00)
+    assert {0x00, ^payload} = BSV.Base58.check_decode!(encoded)
+  end
+
+  test "check_decode! raises on invalid" do
+    assert_raise ArgumentError, fn -> BSV.Base58.check_decode!("1") end
+  end
+
+  test "check_decode too short" do
+    assert {:error, "too short"} = BSV.Base58.check_decode("1")
+  end
+
+  test "decode all zeros" do
+    data = <<0, 0, 0>>
+    encoded = BSV.Base58.encode(data)
+    assert {:ok, ^data} = BSV.Base58.decode(encoded)
+  end
+
   test "invalid checksum" do
     encoded = BSV.Base58.check_encode("test", 0x00)
     # Corrupt by changing a middle character

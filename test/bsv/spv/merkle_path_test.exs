@@ -64,5 +64,28 @@ defmodule BSV.SPV.MerklePathTest do
     test "rejects too-short data" do
       assert {:error, _} = MerklePath.from_bytes(<<0::80>>)
     end
+
+    test "from_hex with invalid hex" do
+      assert {:error, "invalid hex"} = MerklePath.from_hex("ZZZZ")
+    end
+
+    test "to_hex produces valid hex" do
+      {:ok, mp} = MerklePath.from_hex(@brc74_hex)
+      hex = MerklePath.to_hex(mp)
+      assert {:ok, _} = Base.decode16(hex, case: :mixed)
+    end
+
+    test "compute_root_hex with missing txid" do
+      {:ok, mp} = MerklePath.from_hex(@brc74_hex)
+      assert {:error, _} = MerklePath.compute_root_hex(mp, "0000000000000000000000000000000000000000000000000000000000000000")
+    end
+
+    test "from_bytes/to_bytes roundtrip" do
+      {:ok, mp} = MerklePath.from_hex(@brc74_hex)
+      bin = MerklePath.to_bytes(mp)
+      {:ok, mp2} = MerklePath.from_bytes(bin)
+      assert mp2.block_height == mp.block_height
+      assert length(mp2.path) == length(mp.path)
+    end
   end
 end

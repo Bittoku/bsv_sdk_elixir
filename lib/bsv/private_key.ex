@@ -96,8 +96,6 @@ defmodule BSV.PrivateKey do
     ec_scalar_mult(pub_key, scalar)
   end
 
-  defp ec_scalar_mult(_point, 0), do: {:error, "zero scalar"}
-
   defp ec_scalar_mult(point, scalar) do
     bits = Integer.digits(scalar, 2)
     # Double-and-add: start from MSB
@@ -105,19 +103,13 @@ defmodule BSV.PrivateKey do
 
     Enum.reduce_while(rest, {:ok, point}, fn bit, {:ok, acc} ->
       # Double
-      case BSV.PublicKey.point_add(acc, acc) do
-        {:ok, doubled} ->
-          if bit == 1 do
-            case BSV.PublicKey.point_add(doubled, point) do
-              {:ok, added} -> {:cont, {:ok, added}}
-              err -> {:halt, err}
-            end
-          else
-            {:cont, {:ok, doubled}}
-          end
+      {:ok, doubled} = BSV.PublicKey.point_add(acc, acc)
 
-        err ->
-          {:halt, err}
+      if bit == 1 do
+        {:ok, added} = BSV.PublicKey.point_add(doubled, point)
+        {:cont, {:ok, added}}
+      else
+        {:cont, {:ok, doubled}}
       end
     end)
   end

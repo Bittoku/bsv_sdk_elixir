@@ -46,6 +46,29 @@ defmodule BSV.PrivateKeyTest do
     assert_raise ArgumentError, fn -> BSV.PrivateKey.from_wif!("invalid") end
   end
 
+  test "from_wif! success" do
+    {:ok, key} = BSV.PrivateKey.from_wif(@known_wif)
+    key2 = BSV.PrivateKey.from_wif!(@known_wif)
+    assert key.raw == key2.raw
+  end
+
+  test "derive_shared_secret" do
+    key1 = BSV.PrivateKey.generate()
+    key2 = BSV.PrivateKey.generate()
+    pub2 = BSV.PrivateKey.to_public_key(key2)
+    pub1 = BSV.PrivateKey.to_public_key(key1)
+    {:ok, secret1} = BSV.PrivateKey.derive_shared_secret(key1, pub2)
+    {:ok, secret2} = BSV.PrivateKey.derive_shared_secret(key2, pub1)
+    assert secret1 == secret2
+  end
+
+  test "derive_child" do
+    key = BSV.PrivateKey.generate()
+    pub = BSV.PrivateKey.to_public_key(key)
+    {:ok, child} = BSV.PrivateKey.derive_child(key, pub, "1")
+    assert byte_size(child.raw) == 32
+  end
+
   defp ensure_valid(<<raw::binary-size(32)>>) do
     n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
     val = :binary.decode_unsigned(raw, :big)

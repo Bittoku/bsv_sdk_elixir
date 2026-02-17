@@ -64,5 +64,4 @@ defmodule BSV.Auth.VerifiableCertificate do
 
   defp ok_or({:ok, v}, _msg), do: {:ok, v}
   defp ok_or(:error, msg), do: {:error, msg}
-  defp ok_or({:error, _} = err, _msg), do: err
 end

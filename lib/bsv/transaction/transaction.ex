@@ -19,7 +19,7 @@ defmodule BSV.Transaction do
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
-  @spec from_binary(binary()) :: {:ok, t()} | {:error, term()}
+  @spec from_binary(binary()) :: {:ok, t(), binary()} | {:error, term()}
   def from_binary(<<version::little-32, rest::binary>>) do
     with {:ok, inputs, rest} <- parse_inputs(rest),
          {:ok, outputs, rest} <- parse_outputs(rest) do

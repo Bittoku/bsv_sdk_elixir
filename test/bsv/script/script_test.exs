@@ -138,5 +138,56 @@ defmodule BSV.Script.ScriptTest do
       {:ok, script2} = Script.from_binary(bin)
       assert script2.chunks == script.chunks
     end
+
+    test "PUSHDATA4 roundtrip" do
+      data = :binary.copy(<<0xCC>>, 66000)
+      script = %Script{chunks: [{:data, data}]}
+      bin = Script.to_binary(script)
+      assert <<0x4E, _::binary>> = bin
+      {:ok, script2} = Script.from_binary(bin)
+      assert script2.chunks == script.chunks
+    end
+
+    test "PUSHDATA1 truncated data errors" do
+      assert {:error, :data_too_small} = Script.from_binary(<<0x4C, 10, 1, 2>>)
+    end
+
+    test "PUSHDATA2 truncated data errors" do
+      assert {:error, :data_too_small} = Script.from_binary(<<0x4D, 10, 0, 1, 2>>)
+    end
+
+    test "PUSHDATA4 truncated data errors" do
+      assert {:error, :data_too_small} = Script.from_binary(<<0x4E, 10, 0, 0, 0, 1>>)
+    end
+  end
+
+  describe "from_asm edge cases" do
+    test "invalid asm token" do
+      assert {:error, {:invalid_asm_token, "NOT_AN_OP"}} = Script.from_asm("NOT_AN_OP")
+    end
+
+    test "OP_0 in asm" do
+      {:ok, script} = Script.from_asm("OP_0")
+      assert Script.to_asm(script) == "OP_0"
+    end
+
+    test "hex data in asm" do
+      {:ok, script} = Script.from_asm("aabb")
+      assert length(script.chunks) == 1
+    end
+  end
+
+  describe "is_op_return? variants" do
+    test "with bare OP_RETURN" do
+      {:ok, script} = Script.from_binary(<<0x6A, 0x05, 0x68, 0x65, 0x6C, 0x6C, 0x6F>>)
+      assert Script.is_op_return?(script)
+    end
+  end
+
+  describe "new/0" do
+    test "creates empty script" do
+      script = Script.new()
+      assert script.chunks == []
+    end
   end
 end
