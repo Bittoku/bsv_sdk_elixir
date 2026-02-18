@@ -11,8 +11,8 @@ defmodule BSV.MixProject do
       description: "Feature-complete Bitcoin SV SDK for Elixir — primitives, scripts, transactions, wallet, tokens (STAS/DSTAS), SPV, and transport clients.",
       package: package(),
       docs: docs(),
-      source_url: "https://github.com/bsv-sdk/bsv_sdk_elixir",
-      homepage_url: "https://github.com/bsv-sdk/bsv_sdk_elixir",
+      source_url: "https://github.com/Bittoku/bsv_sdk_elixir",
+      homepage_url: "https://github.com/Bittoku/bsv_sdk_elixir",
       dialyzer: [plt_add_apps: [:jason, :req]]
     ]
   end
@@ -28,7 +28,7 @@ defmodule BSV.MixProject do
       name: "bsv_sdk",
       licenses: ["MIT"],
       links: %{
-        "GitHub" => "https://github.com/bsv-sdk/bsv_sdk_elixir"
+        "GitHub" => "https://github.com/Bittoku/bsv_sdk_elixir"
       },
       maintainers: ["Jerry David Chan"],
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE)
