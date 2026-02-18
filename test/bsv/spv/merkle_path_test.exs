@@ -83,7 +83,7 @@ defmodule BSV.SPV.MerklePathTest do
     test "from_bytes/to_bytes roundtrip" do
       {:ok, mp} = MerklePath.from_hex(@brc74_hex)
       bin = MerklePath.to_bytes(mp)
-      {:ok, mp2} = MerklePath.from_bytes(bin)
+      {:ok, mp2, _rest} = MerklePath.from_bytes(bin)
       assert mp2.block_height == mp.block_height
       assert length(mp2.path) == length(mp.path)
     end

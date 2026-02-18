@@ -18,15 +18,22 @@ defmodule BSV.Transaction.Output do
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
+  # 21 million BTC in satoshis
+  @max_satoshis 21_000_000 * 100_000_000
+
   @doc "Parse an output from raw binary. Returns `{:ok, output, remaining_bytes}` on success."
   @spec from_binary(binary()) :: {:ok, t(), binary()} | {:error, term()}
   def from_binary(<<satoshis::little-64, rest::binary>>) do
-    with {:ok, {script_len, rest}} <- VarInt.decode(rest),
-         <<script_bin::binary-size(script_len), rest::binary>> <- rest,
-         {:ok, script} <- Script.from_binary(script_bin) do
-      {:ok, %__MODULE__{satoshis: satoshis, locking_script: script}, rest}
+    if satoshis > @max_satoshis do
+      {:error, :satoshi_value_out_of_range}
     else
-      _ -> {:error, :invalid_output}
+      with {:ok, {script_len, rest}} <- VarInt.decode(rest),
+           <<script_bin::binary-size(script_len), rest::binary>> <- rest,
+           {:ok, script} <- Script.from_binary(script_bin) do
+        {:ok, %__MODULE__{satoshis: satoshis, locking_script: script}, rest}
+      else
+        _ -> {:error, :invalid_output}
+      end
     end
   end
 

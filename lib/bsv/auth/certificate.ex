@@ -94,9 +94,18 @@ defmodule BSV.Auth.Certificate do
 
       signature =
         if byte_size(rest2) > 0 do
-          {:ok, {sig_len, rest3}} = VarInt.decode(rest2)
-          <<sig::binary-size(sig_len), _::binary>> = rest3
-          sig
+          case VarInt.decode(rest2) do
+            {:ok, {sig_len, rest3}} when byte_size(rest3) >= sig_len ->
+              <<sig::binary-size(sig_len), _::binary>> = rest3
+              sig
+
+            {:ok, {_sig_len, rest3}} ->
+              # Truncated signature data — take what's available or return empty
+              if byte_size(rest3) > 0, do: rest3, else: <<>>
+
+            {:error, _} ->
+              <<>>
+          end
         else
           <<>>
         end

@@ -97,13 +97,13 @@ defmodule BSV.Message.Signed do
     with {:ok, signer} <- PublicKey.from_bytes(sender_bytes) do
       case recipient do
         nil ->
-          {:error, "this signature can only be verified with knowledge of a specific private key. The associated public key is: #{Base.encode16(verifier_bytes, case: :lower)}"}
+          {:error, "this signature requires a specific recipient private key for verification"}
 
         %PrivateKey{} = r ->
           actual_pub = PrivateKey.to_public_key(r).point
 
-          if verifier_bytes != actual_pub do
-            {:error, "the recipient public key is #{Base.encode16(actual_pub, case: :lower)} but the signature requires the recipient to have public key #{Base.encode16(verifier_bytes, case: :lower)}"}
+          if not BSV.Crypto.secure_compare(verifier_bytes, actual_pub) do
+            {:error, "recipient public key mismatch"}
           else
             if byte_size(rest) < 32 do
               {:error, "signature too short for key ID"}

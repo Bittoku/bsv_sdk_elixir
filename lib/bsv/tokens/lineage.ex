@@ -12,6 +12,18 @@ defmodule BSV.Tokens.Lineage do
       {:ok, validator} = BSV.Tokens.Lineage.validate(validator, utxo_txid, vout, tx_fetcher_fn)
 
   The `tx_fetcher_fn` is a function `(txid_binary -> {:ok, raw_tx} | {:error, reason})`.
+
+  ## Security Notice — Trust Model
+
+  This validator verifies the **chain of txids and script types** back to genesis,
+  and confirms that `sha256d(raw_tx) == expected_txid` for each hop. However, it
+  does **not** verify transaction signatures. It trusts the `tx_fetcher` to return
+  authentic transaction data.
+
+  If the `tx_fetcher` is backed by an untrusted source, an attacker could supply
+  fabricated transactions with valid txid hashes but forged scripts/outputs. For
+  maximum security, combine lineage validation with SPV proof verification (Merkle
+  path against a trusted block header) to confirm each transaction was actually mined.
   """
 
   alias BSV.{Crypto, Transaction}

@@ -62,14 +62,16 @@ defmodule BSV.ARC.ClientTest do
     assert err.message =~ "dust output"
   end
 
+  @test_txid "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
   test "status query" do
     bypass = Bypass.open()
 
-    Bypass.expect(bypass, "GET", "/tx/abc123", fn conn ->
+    Bypass.expect(bypass, "GET", "/tx/#{@test_txid}", fn conn ->
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.resp(200, Jason.encode!(%{
-        "txid" => "abc123",
+        "txid" => @test_txid,
         "txStatus" => "MINED",
         "status" => 9,
         "blockHeight" => 800_000,
@@ -78,8 +80,8 @@ defmodule BSV.ARC.ClientTest do
     end)
 
     client = Client.new(test_config(bypass.port))
-    assert {:ok, resp} = Client.status(client, "abc123")
-    assert resp.txid == "abc123"
+    assert {:ok, resp} = Client.status(client, @test_txid)
+    assert resp.txid == @test_txid
     assert resp.block_height == 800_000
   end
 
@@ -185,11 +187,11 @@ defmodule BSV.ARC.ClientTest do
   test "mined response with merkle path" do
     bypass = Bypass.open()
 
-    Bypass.expect(bypass, "GET", "/tx/abc123", fn conn ->
+    Bypass.expect(bypass, "GET", "/tx/#{@test_txid}", fn conn ->
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.resp(200, Jason.encode!(%{
-        "txid" => "abc123",
+        "txid" => @test_txid,
         "txStatus" => "MINED",
         "status" => 9,
         "blockHeight" => 850_000,
@@ -200,15 +202,24 @@ defmodule BSV.ARC.ClientTest do
 
     config = %Config{base_url: "http://localhost:#{bypass.port}"}
     client = Client.new(config)
-    assert {:ok, resp} = Client.status(client, "abc123")
+    assert {:ok, resp} = Client.status(client, @test_txid)
     assert resp.block_height == 850_000
     assert resp.merkle_path == "fed123abc"
   end
 
+  test "status query rejects invalid txid format" do
+    config = %Config{base_url: "http://localhost:9999"}
+    client = Client.new(config)
+    assert {:error, err} = Client.status(client, "nonexistent")
+    assert err.type == :validation
+    assert err.message =~ "invalid txid format"
+  end
+
   test "status query not found returns response" do
     bypass = Bypass.open()
+    not_found_txid = "0000000000000000000000000000000000000000000000000000000000000000"
 
-    Bypass.expect(bypass, "GET", "/tx/nonexistent", fn conn ->
+    Bypass.expect(bypass, "GET", "/tx/#{not_found_txid}", fn conn ->
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.resp(200, Jason.encode!(%{"txid" => "", "status" => 0, "title" => "Not found"}))
@@ -217,7 +228,7 @@ defmodule BSV.ARC.ClientTest do
     config = %Config{base_url: "http://localhost:#{bypass.port}"}
     client = Client.new(config)
     # ARC returns 200 with JSON for not-found, caller checks status
-    assert {:ok, resp} = Client.status(client, "nonexistent")
+    assert {:ok, resp} = Client.status(client, not_found_txid)
     assert resp.title == "Not found"
   end
 

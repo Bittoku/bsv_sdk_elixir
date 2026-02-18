@@ -76,7 +76,8 @@ defmodule BSV.Tokens.Scheme do
   @doc "Deserialize a token scheme from a JSON string."
   @spec from_json(binary()) :: {:ok, t()} | {:error, term()}
   def from_json(json) when is_binary(json) do
-    with {:ok, map} <- Jason.decode(json) do
+    with {:ok, map} <- Jason.decode(json),
+         :ok <- validate_required_fields(map) do
       token_id =
         case map["token_id"] do
           %{"address_string" => addr, "pkh" => pkh_hex} ->
@@ -87,10 +88,14 @@ defmodule BSV.Tokens.Scheme do
             TokenId.from_string("")
         end
 
-      authority = %Authority{
-        m: map["authority"]["m"] || 1,
-        public_keys: map["authority"]["public_keys"] || []
-      }
+      authority = case map["authority"] do
+        %{"m" => m, "public_keys" => keys} when is_integer(m) and is_list(keys) ->
+          %Authority{m: m, public_keys: keys}
+        %{"m" => m} when is_integer(m) ->
+          %Authority{m: m, public_keys: []}
+        _ ->
+          %Authority{m: 1, public_keys: []}
+      end
 
       {:ok,
        %__MODULE__{
@@ -103,6 +108,22 @@ defmodule BSV.Tokens.Scheme do
          is_divisible: map["is_divisible"] || true,
          authority: authority
        }}
+    end
+  end
+
+  defp validate_required_fields(map) do
+    cond do
+      not is_binary(map["name"]) or map["name"] == "" ->
+        {:error, "scheme requires a non-empty 'name' string"}
+
+      not is_binary(map["symbol"]) or map["symbol"] == "" ->
+        {:error, "scheme requires a non-empty 'symbol' string"}
+
+      not is_integer(map["satoshis_per_token"]) or map["satoshis_per_token"] <= 0 ->
+        {:error, "scheme requires a positive integer 'satoshis_per_token'"}
+
+      true ->
+        :ok
     end
   end
 end

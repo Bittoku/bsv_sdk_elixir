@@ -35,13 +35,22 @@ defmodule BSV.SPV.MerklePath do
   @spec from_hex(String.t()) :: {:ok, t()} | {:error, String.t()}
   def from_hex(hex) do
     case Base.decode16(hex, case: :mixed) do
-      {:ok, bin} -> from_bytes(bin)
+      {:ok, bin} ->
+        case from_bytes(bin) do
+          {:ok, mp, _rest} -> {:ok, mp}
+          error -> error
+        end
       :error -> {:error, "invalid hex"}
     end
   end
 
-  @doc "Parse a MerklePath from binary data (BRC-74)."
-  @spec from_bytes(binary()) :: {:ok, t()} | {:error, String.t()}
+  @doc """
+  Parse a MerklePath from binary data (BRC-74).
+
+  Returns `{:ok, merkle_path, remaining_bytes}` so callers (e.g. BEEF parser)
+  know exactly how many bytes were consumed without re-serialization.
+  """
+  @spec from_bytes(binary()) :: {:ok, t(), binary()} | {:error, String.t()}
   def from_bytes(data) when byte_size(data) < 37 do
     {:error, "BUMP bytes do not contain enough data to be valid"}
   end
@@ -50,8 +59,8 @@ defmodule BSV.SPV.MerklePath do
     {:ok, {block_height, rest}} = VarInt.decode(data)
     <<tree_height::8, rest2::binary>> = rest
 
-    {:ok, path, _rest} = read_levels(rest2, tree_height, [])
-    {:ok, %__MODULE__{block_height: block_height, path: path}}
+    {:ok, path, remaining} = read_levels(rest2, tree_height, [])
+    {:ok, %__MODULE__{block_height: block_height, path: path}, remaining}
   end
 
   @doc "Serialize to BRC-74 binary format."
@@ -82,6 +91,9 @@ defmodule BSV.SPV.MerklePath do
   Compute the Merkle root given a transaction hash (32 bytes, internal byte order).
 
   If `txid` is nil, uses the first available hash from level 0.
+
+  Validates that `duplicate` elements only appear at the rightmost position
+  of each level (mitigates CVE-2012-2459 second preimage attack).
   """
   @spec compute_root(t(), binary() | nil) :: {:ok, binary()} | {:error, String.t()}
   def compute_root(%__MODULE__{path: path} = mp, txid \\ nil) do
@@ -90,14 +102,40 @@ defmodule BSV.SPV.MerklePath do
     if txid == nil do
       {:error, "no hash found at level 0"}
     else
-      # Single tx in block
-      if length(path) == 1 and length(hd(path)) == 1 do
-        {:ok, txid}
-      else
-        indexed = build_index(mp)
-        compute_root_walk(path, indexed, txid)
+      with :ok <- validate_duplicate_positions(path) do
+        # Single tx in block
+        if length(path) == 1 and length(hd(path)) == 1 do
+          {:ok, txid}
+        else
+          indexed = build_index(mp)
+          compute_root_walk(path, indexed, txid)
+        end
       end
     end
+  end
+
+  # Duplicate elements must only appear at the rightmost position of each level.
+  # This prevents second preimage attacks (CVE-2012-2459).
+  defp validate_duplicate_positions(path) do
+    Enum.reduce_while(path, :ok, fn level, :ok ->
+      dups = Enum.filter(level, fn elem -> elem.duplicate == true end)
+
+      case dups do
+        [] ->
+          {:cont, :ok}
+
+        [single] ->
+          max_offset = level |> Enum.map(& &1.offset) |> Enum.max()
+          if single.offset == max_offset do
+            {:cont, :ok}
+          else
+            {:halt, {:error, "duplicate element at non-rightmost position (offset #{single.offset}), possible second preimage attack"}}
+          end
+
+        _multiple ->
+          {:halt, {:error, "multiple duplicate elements at same level, possible second preimage attack"}}
+      end
+    end)
   end
 
   @doc "Compute root from hex txid string (display order, byte-reversed)."

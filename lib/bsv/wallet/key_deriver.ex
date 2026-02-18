@@ -37,11 +37,20 @@ defmodule BSV.Wallet.KeyDeriver do
   Derive a symmetric key for the given protocol, key ID, and counterparty.
 
   Derives both a public and private key, then computes their ECDH shared secret.
-  The x-coordinate of the shared point becomes the symmetric key.
+  The x-coordinate is passed through SHA-256 before use as the symmetric key.
+
+  ## Migration
+
+  Pass `legacy: true` to derive using the legacy method (raw x-coordinate).
+  This is used internally for backward-compatible decryption fallback.
   """
-  @spec derive_symmetric_key(t(), Protocol.t(), String.t(), Counterparty.t()) ::
+  @spec derive_symmetric_key(t(), Protocol.t(), String.t(), Counterparty.t(), keyword()) ::
           {:ok, SymmetricKey.t()} | {:error, String.t()}
-  def derive_symmetric_key(%__MODULE__{} = kd, %Protocol{} = protocol, key_id, %Counterparty{} = counterparty) do
+  def derive_symmetric_key(kd, protocol, key_id, counterparty, opts \\ [])
+
+  def derive_symmetric_key(%__MODULE__{} = kd, %Protocol{} = protocol, key_id, %Counterparty{} = counterparty, opts) do
+    legacy = Keyword.get(opts, :legacy, false)
+
     effective = if counterparty.type == :anyone do
       %Counterparty{type: :other, public_key: anyone_public_key()}
     else
@@ -51,9 +60,10 @@ defmodule BSV.Wallet.KeyDeriver do
     with {:ok, derived_pub} <- derive_public_key(kd, protocol, key_id, effective, false),
          {:ok, derived_priv} <- derive_private_key(kd, protocol, key_id, effective) do
       {:ok, shared} = PrivateKey.derive_shared_secret(derived_priv, derived_pub)
-      # x-coordinate is bytes 1..32 of the compressed point (skip prefix byte)
       <<_prefix::8, x_coord::binary-size(32)>> = shared.point
-      {:ok, SymmetricKey.new(x_coord)}
+
+      key_bytes = if legacy, do: x_coord, else: BSV.Crypto.sha256(x_coord)
+      {:ok, SymmetricKey.new(key_bytes)}
     end
   end
 

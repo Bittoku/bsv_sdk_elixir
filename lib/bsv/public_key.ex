@@ -17,15 +17,40 @@ defmodule BSV.PublicKey do
     %__MODULE__{point: do_compress(pub)}
   end
 
-  @doc "Create a public key from raw bytes (33 compressed or 65 uncompressed)."
+  @doc """
+  Create a public key from raw bytes (33 compressed or 65 uncompressed).
+
+  Validates that the point lies on the secp256k1 curve (y² ≡ x³ + 7 mod p).
+  """
   @spec from_bytes(binary()) :: {:ok, t()} | {:error, String.t()}
-  def from_bytes(<<prefix, _::binary-size(32)>> = bin)
+  def from_bytes(<<prefix, x::binary-size(32)>> = bin)
       when prefix in [0x02, 0x03] and byte_size(bin) == 33 do
-    {:ok, %__MODULE__{point: bin}}
+    # Decompress to validate the point is on the curve
+    p = @secp256k1_p
+    x_int = :binary.decode_unsigned(x, :big)
+    y_sq = rem(rem(x_int * x_int * x_int + 7, p) + p, p)
+    y = mod_pow(y_sq, div(p + 1, 4), p)
+
+    # Verify the square root is valid (y² mod p == y_sq)
+    if rem(y * y, p) != y_sq do
+      {:error, "point not on secp256k1 curve"}
+    else
+      {:ok, %__MODULE__{point: bin}}
+    end
   end
 
-  def from_bytes(<<0x04, _::binary-size(64)>> = bin) when byte_size(bin) == 65 do
-    {:ok, %__MODULE__{point: bin}}
+  def from_bytes(<<0x04, x::binary-size(32), y::binary-size(32)>> = bin) when byte_size(bin) == 65 do
+    p = @secp256k1_p
+    x_int = :binary.decode_unsigned(x, :big)
+    y_int = :binary.decode_unsigned(y, :big)
+    lhs = rem(y_int * y_int, p)
+    rhs = rem(rem(x_int * x_int * x_int + 7, p) + p, p)
+
+    if lhs != rhs do
+      {:error, "point not on secp256k1 curve"}
+    else
+      {:ok, %__MODULE__{point: bin}}
+    end
   end
 
   def from_bytes(_), do: {:error, "invalid public key bytes"}

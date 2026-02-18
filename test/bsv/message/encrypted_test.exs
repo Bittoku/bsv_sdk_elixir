@@ -65,7 +65,7 @@ defmodule BSV.Message.EncryptedTest do
 
       {:ok, encrypted} = Encrypted.encrypt(<<1, 2, 3>>, sender, recipient_pub)
       assert {:error, msg} = Encrypted.decrypt(encrypted, wrong)
-      assert msg =~ "expects a recipient public key"
+      assert msg =~ "recipient public key mismatch"
     end
 
     test "too short" do

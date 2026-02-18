@@ -151,8 +151,11 @@ defmodule BSV.Wallet.KeyDeriverTest do
       kd = root_kd()
       cp = %Counterparty{type: :other, public_key: counterparty_pub()}
       {:ok, sk} = KeyDeriver.derive_symmetric_key(kd, test_protocol(), "12345", cp)
+      # Value updated after security patch: ECDH shared secret is now passed
+      # through SHA-256 before use as symmetric key (HIGH-04 remediation),
+      # and ECDH uses :crypto.compute_key/4 instead of custom EC arithmetic (CRITICAL-02).
       assert Base.encode16(sk.raw, case: :lower) ==
-               "4ce8e868f2006e3fa8fc61ea4bc4be77d397b412b44b4dca047fb7ec3ca7cfd8"
+               "bf9c1f2bf01168c46175076a868e9e1702f77b9218c1883e68a0fbdf2633ea86"
     end
 
     test "derives with anyone counterparty" do

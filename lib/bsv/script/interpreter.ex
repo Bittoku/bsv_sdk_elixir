@@ -33,10 +33,14 @@ defmodule BSV.Script.Interpreter do
               cond_stack: [],
               flags: [],
               num_ops: 0,
+              chunk_index: 0,
+              last_code_separator: nil,
               sighash_fn: nil,
               after_genesis: false,
               max_ops: 500_000_000,
-              max_script_num_len: 750_000
+              max_script_num_len: 750_000,
+              max_element_size: 520,
+              max_stack_size: 1_000
   end
 
   @doc """
@@ -65,13 +69,17 @@ defmodule BSV.Script.Interpreter do
       sighash_fn: Keyword.get(opts, :sighash_fn),
       after_genesis: after_genesis,
       max_ops: if(after_genesis, do: 500_000_000, else: 500),
-      max_script_num_len: if(after_genesis, do: 750_000, else: 4)
+      max_script_num_len: if(after_genesis, do: 750_000, else: 4),
+      max_element_size: if(after_genesis, do: 4_294_967_295, else: 520),
+      max_stack_size: if(after_genesis, do: 4_294_967_295, else: 1_000)
     }
 
     # Execute unlocking script
     with {:ok, state} <- execute_chunks(unlock.chunks, state),
-         # Clear alt stack between scripts
-         state = %{state | astack: [], num_ops: 0},
+         # Reject unbalanced conditionals leaking from unlock into lock script
+         true <- state.cond_stack == [] || {:error, :unbalanced_conditional_in_unlock},
+         # Clear alt stack between scripts, reset counters
+         state = %{state | astack: [], num_ops: 0, chunk_index: 0, last_code_separator: nil},
          # Execute locking script
          {:ok, state} <- execute_chunks(lock.chunks, state) do
       if state.cond_stack != [] do
@@ -88,8 +96,15 @@ defmodule BSV.Script.Interpreter do
 
   defp execute_chunks([chunk | rest], state) do
     case execute_chunk(chunk, state) do
-      {:ok, state} -> execute_chunks(rest, state)
-      {:error, _} = err -> err
+      {:ok, state} ->
+        case check_stack_size(state) do
+          {:ok, state} ->
+            execute_chunks(rest, %{state | chunk_index: state.chunk_index + 1})
+          {:error, _} = err -> err
+        end
+
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -131,7 +146,17 @@ defmodule BSV.Script.Interpreter do
 
   # ---- Stack helpers ----
 
-  defp push(%State{dstack: stack} = state, val), do: %{state | dstack: [val | stack]}
+  defp push(%State{dstack: stack} = state, val) do
+    %{state | dstack: [val | stack]}
+  end
+
+  defp check_stack_size(%State{dstack: d, astack: a, max_stack_size: max} = state) do
+    if length(d) + length(a) > max do
+      {:error, :stack_size_exceeded}
+    else
+      {:ok, state}
+    end
+  end
 
   defp pop(%State{dstack: [top | rest]} = state), do: {:ok, top, %{state | dstack: rest}}
   defp pop(%State{dstack: []}), do: {:error, :stack_underflow}
@@ -159,8 +184,11 @@ defmodule BSV.Script.Interpreter do
   defp is_truthy(<<>>), do: false
 
   defp is_truthy(bin) when is_binary(bin) do
-    # False if all zero bytes (including negative zero 0x80)
-    bin != :binary.copy(<<0>>, byte_size(bin)) and bin != <<0x80>>
+    # False if all bytes are zero, or if all bytes are zero except the sign bit
+    # of the last byte (negative zero). E.g. <<0x80>>, <<0x00, 0x80>>, etc.
+    bytes = :binary.bin_to_list(bin)
+    {init, [last]} = Enum.split(bytes, -1)
+    not (Enum.all?(init, &(&1 == 0)) and (last == 0 or last == 0x80))
   end
 
   defp count_op(%State{num_ops: n, max_ops: max}) when n + 1 > max, do: {:error, :too_many_ops}
@@ -388,7 +416,13 @@ defmodule BSV.Script.Interpreter do
   defp do_execute_op(0x7E, state) do
     with {:ok, b, state} <- pop(state),
          {:ok, a, state} <- pop(state) do
-      {:ok, push(state, a <> b)}
+      result = a <> b
+
+      if byte_size(result) > state.max_element_size do
+        {:error, :element_size_exceeded}
+      else
+        {:ok, push(state, result)}
+      end
     end
   end
 
@@ -604,8 +638,10 @@ defmodule BSV.Script.Interpreter do
     end
   end
 
-  # OP_CODESEPARATOR
-  defp do_execute_op(0xAB, state), do: {:ok, state}
+  # OP_CODESEPARATOR — record position for subsequent OP_CHECKSIG subscript
+  defp do_execute_op(0xAB, state) do
+    {:ok, %{state | last_code_separator: state.chunk_index}}
+  end
 
   # OP_CHECKSIG
   defp do_execute_op(0xAC, state) do
@@ -646,22 +682,28 @@ defmodule BSV.Script.Interpreter do
       if nkeys < 0 or nkeys > 20 do
         {:error, :invalid_pubkey_count}
       else
-        {keys, state} = pop_n(state, nkeys)
+        # HIGH-06: Add nkeys to op counter per consensus
+        state = %{state | num_ops: state.num_ops + nkeys}
 
-        with {:ok, nsigs, state} <- pop_num(state) do
-          if nsigs < 0 or nsigs > nkeys do
-            {:error, :invalid_sig_count}
-          else
-            {sigs, state} = pop_n(state, nsigs)
-            # Pop the dummy element (protocol bug)
-            with {:ok, _dummy, state} <- pop(state) do
-              case state.sighash_fn do
-                nil ->
-                  {:error, :no_sighash_fn}
+        if state.num_ops > state.max_ops do
+          {:error, :too_many_ops}
+        else
+          with {:ok, keys, state} <- pop_n(state, nkeys),
+               {:ok, nsigs, state} <- pop_num(state) do
+            if nsigs < 0 or nsigs > nkeys do
+              {:error, :invalid_sig_count}
+            else
+              with {:ok, sigs, state} <- pop_n(state, nsigs),
+                   # Pop the dummy element (protocol bug)
+                   {:ok, _dummy, state} <- pop(state) do
+                case state.sighash_fn do
+                  nil ->
+                    {:error, :no_sighash_fn}
 
-                sighash_fn ->
-                  success = verify_multisig(sigs, keys, sighash_fn)
-                  {:ok, push_bool(state, success)}
+                  sighash_fn ->
+                    success = verify_multisig(sigs, keys, sighash_fn)
+                    {:ok, push_bool(state, success)}
+                end
               end
             end
           end
@@ -773,16 +815,12 @@ defmodule BSV.Script.Interpreter do
     end
   end
 
-  defp pop_n(state, 0), do: {[], state}
+  defp pop_n(state, 0), do: {:ok, [], state}
 
   defp pop_n(state, n) when n > 0 do
-    case pop(state) do
-      {:ok, val, state} ->
-        {rest, state} = pop_n(state, n - 1)
-        {[val | rest], state}
-
-      {:error, _} ->
-        {[], state}
+    with {:ok, val, state} <- pop(state),
+         {:ok, rest, state} <- pop_n(state, n - 1) do
+      {:ok, [val | rest], state}
     end
   end
 

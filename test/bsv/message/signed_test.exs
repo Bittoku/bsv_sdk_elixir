@@ -74,7 +74,7 @@ defmodule BSV.Message.SignedTest do
 
       {:ok, sig} = Signed.sign(<<1, 2, 3>>, sender, recipient_pub)
       assert {:error, msg} = Signed.verify(<<1, 2, 3>>, sig)
-      assert msg =~ "specific private key"
+      assert msg =~ "specific recipient private key"
     end
 
     test "wrong verifier" do
@@ -85,7 +85,7 @@ defmodule BSV.Message.SignedTest do
 
       {:ok, sig} = Signed.sign(<<1, 2, 3>>, sender, recipient_pub)
       assert {:error, msg} = Signed.verify(<<1, 2, 3>>, sig, wrong)
-      assert msg =~ "recipient public key is"
+      assert msg =~ "recipient public key mismatch"
     end
 
     test "too short" do

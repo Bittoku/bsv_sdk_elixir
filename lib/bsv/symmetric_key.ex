@@ -1,6 +1,17 @@
 defmodule BSV.SymmetricKey do
   @moduledoc """
   AES-256-GCM symmetric encryption.
+
+  ## Migration Notice (v0.2)
+
+  The IV size was changed from 32 bytes to the standard 12 bytes for GCM.
+  Decryption automatically detects the IV size of the ciphertext:
+
+  - New ciphertexts use 12-byte IVs (standard, secure)
+  - Legacy ciphertexts with 32-byte IVs are still decryptable
+
+  Encryption always uses the new 12-byte IV format. To migrate legacy data,
+  decrypt with the old key and re-encrypt — the new format is used automatically.
   """
 
   @enforce_keys [:raw]
@@ -8,7 +19,8 @@ defmodule BSV.SymmetricKey do
 
   @type t :: %__MODULE__{raw: <<_::256>>}
 
-  @iv_size 32
+  @iv_size 12
+  @legacy_iv_size 32
   @tag_size 16
 
   @doc "Create a new SymmetricKey from a 32-byte binary."
@@ -19,7 +31,7 @@ defmodule BSV.SymmetricKey do
   @spec to_bytes(t()) :: <<_::256>>
   def to_bytes(%__MODULE__{raw: raw}), do: raw
 
-  @doc "Encrypt plaintext with a 32-byte key using AES-256-GCM."
+  @doc "Encrypt plaintext with a 32-byte key using AES-256-GCM (12-byte IV)."
   @spec encrypt(<<_::256>> | t(), binary()) :: {:ok, binary()}
   def encrypt(%__MODULE__{raw: key}, plaintext), do: encrypt(key, plaintext)
 
@@ -32,15 +44,34 @@ defmodule BSV.SymmetricKey do
     {:ok, iv <> ciphertext <> tag}
   end
 
-  @doc "Decrypt ciphertext with a 32-byte key using AES-256-GCM."
+  @doc """
+  Decrypt ciphertext with a 32-byte key using AES-256-GCM.
+
+  Automatically detects IV size: tries 12-byte (current) first, then
+  falls back to 32-byte (legacy) for backward compatibility.
+  """
   @spec decrypt(<<_::256>> | t(), binary()) :: {:ok, binary()} | {:error, :decrypt_failed}
   def decrypt(%__MODULE__{raw: key}, encrypted), do: decrypt(key, encrypted)
 
-  def decrypt(<<key::binary-size(32)>>, encrypted)
-      when byte_size(encrypted) >= @iv_size + @tag_size do
-    ct_len = byte_size(encrypted) - @iv_size - @tag_size
+  def decrypt(<<key::binary-size(32)>>, encrypted) do
+    # Try standard 12-byte IV first
+    case decrypt_with_iv_size(key, encrypted, @iv_size) do
+      {:ok, _} = result ->
+        result
 
-    <<iv::binary-size(@iv_size), ciphertext::binary-size(ct_len), tag::binary-size(@tag_size)>> =
+      _error ->
+        # Fall back to legacy 32-byte IV
+        case decrypt_with_iv_size(key, encrypted, @legacy_iv_size) do
+          {:ok, _} = result -> result
+          _ -> {:error, :decrypt_failed}
+        end
+    end
+  end
+
+  defp decrypt_with_iv_size(key, encrypted, iv_size) when byte_size(encrypted) >= iv_size + @tag_size do
+    ct_len = byte_size(encrypted) - iv_size - @tag_size
+
+    <<iv::binary-size(iv_size), ciphertext::binary-size(ct_len), tag::binary-size(@tag_size)>> =
       encrypted
 
     case :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, ciphertext, <<>>, tag, false) do
@@ -49,5 +80,5 @@ defmodule BSV.SymmetricKey do
     end
   end
 
-  def decrypt(<<_::binary-size(32)>>, _), do: {:error, :decrypt_failed}
+  defp decrypt_with_iv_size(_key, _encrypted, _iv_size), do: {:error, :too_short}
 end

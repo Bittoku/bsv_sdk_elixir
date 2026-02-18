@@ -79,25 +79,12 @@ defmodule BSV.SPV.Beef do
 
   defp read_n_bumps(data, n, acc) do
     case MerklePath.from_bytes(data) do
-      {:ok, mp} ->
-        # Re-serialize to find consumed bytes
-        _ = byte_size(MerklePath.to_bytes(mp)) - byte_size(VarInt.encode(mp.block_height))
-        # Actually, we need a from_bytes that returns remaining. Simpler: re-parse with known size.
-        # For now, re-serialize and skip that many bytes
-        serialized = serialize_single_bump(mp)
-        <<_::binary-size(byte_size(serialized)), rest::binary>> = data
+      {:ok, mp, rest} ->
         read_n_bumps(rest, n - 1, [mp | acc])
 
-      error ->
+      {:error, _} = error ->
         error
     end
-  end
-
-  defp serialize_single_bump(%MerklePath{} = mp) do
-    # Serialize without the block_height varint prefix (it's part of the BUMP format)
-    # Actually MerklePath.to_bytes includes block_height. The BEEF format includes
-    # the full BUMP. So we just use to_bytes directly.
-    MerklePath.to_bytes(mp)
   end
 
   defp read_transactions(data, version) do

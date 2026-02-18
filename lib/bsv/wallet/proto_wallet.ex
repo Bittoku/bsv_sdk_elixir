@@ -64,13 +64,27 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
-  @doc "Decrypt ciphertext using a derived symmetric key."
+  @doc """
+  Decrypt ciphertext using a derived symmetric key.
+
+  Automatically falls back to legacy key derivation (raw ECDH x-coordinate)
+  if decryption with the current KDF (SHA-256) fails, for backward compatibility.
+  """
   @impl BSV.Wallet
   def decrypt(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, ciphertext) do
     counterparty = default_counterparty_self(enc.counterparty)
 
     with {:ok, key} <- KeyDeriver.derive_symmetric_key(kd, enc.protocol_id, enc.key_id, counterparty) do
-      SymmetricKey.decrypt(key, ciphertext)
+      case SymmetricKey.decrypt(key, ciphertext) do
+        {:ok, _} = result ->
+          result
+
+        {:error, :decrypt_failed} ->
+          # Legacy fallback: try raw x-coordinate key derivation
+          with {:ok, legacy_key} <- KeyDeriver.derive_symmetric_key(kd, enc.protocol_id, enc.key_id, counterparty, legacy: true) do
+            SymmetricKey.decrypt(legacy_key, ciphertext)
+          end
+      end
     end
   end
 
@@ -122,14 +136,28 @@ defmodule BSV.Wallet.ProtoWallet do
     end
   end
 
-  @doc "Verify an HMAC-SHA256 using a derived symmetric key."
+  @doc """
+  Verify an HMAC-SHA256 using a derived symmetric key.
+
+  Falls back to legacy key derivation if the current key doesn't match,
+  for backward compatibility with HMACs created by v0.1.
+  """
   @impl BSV.Wallet
   def verify_hmac(%__MODULE__{key_deriver: kd}, %EncryptionArgs{} = enc, data, hmac) do
     counterparty = default_counterparty_self(enc.counterparty)
 
     with {:ok, key} <- KeyDeriver.derive_symmetric_key(kd, enc.protocol_id, enc.key_id, counterparty) do
       computed = Crypto.sha256_hmac(data, SymmetricKey.to_bytes(key))
-      {:ok, computed == hmac}
+
+      if Crypto.secure_compare(computed, hmac) do
+        {:ok, true}
+      else
+        # Legacy fallback
+        with {:ok, legacy_key} <- KeyDeriver.derive_symmetric_key(kd, enc.protocol_id, enc.key_id, counterparty, legacy: true) do
+          legacy_computed = Crypto.sha256_hmac(data, SymmetricKey.to_bytes(legacy_key))
+          {:ok, Crypto.secure_compare(legacy_computed, hmac)}
+        end
+      end
     end
   end
 

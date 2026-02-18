@@ -40,9 +40,19 @@ defmodule BSV.ARC.Client do
     end
   end
 
+  @txid_regex ~r/^[0-9a-fA-F]{64}$/
+
   @doc "Query the status of a transaction by txid."
   @spec status(t(), String.t()) :: {:ok, ArcResponse.t()} | {:error, term()}
   def status(%__MODULE__{} = client, txid) when is_binary(txid) do
+    unless Regex.match?(@txid_regex, txid) do
+      {:error, %Error{type: :validation, message: "invalid txid format: expected 64 hex characters"}}
+    else
+      status_validated(client, txid)
+    end
+  end
+
+  defp status_validated(client, txid) do
     headers = build_headers(client.config)
 
     case Req.get(client.req, url: "/tx/#{txid}", headers: headers) do

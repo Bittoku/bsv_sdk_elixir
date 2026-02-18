@@ -6,6 +6,15 @@ defmodule BSV.Message.Encrypted do
   `version (4 bytes) || sender_pubkey (33 bytes) || recipient_pubkey (33 bytes) || key_id (32 bytes) || ciphertext`
 
   See: <https://github.com/bitcoin-sv/BRCs/blob/master/peer-to-peer/0078.md>
+
+  ## Migration Notice (v0.2)
+
+  The symmetric key derivation was changed from raw ECDH x-coordinate to
+  `SHA-256(x-coordinate)` for improved security. Decryption automatically
+  falls back to the legacy derivation if the new key fails, ensuring
+  backward compatibility with messages encrypted by v0.1.
+
+  New encryptions always use the secure SHA-256 derivation.
   """
 
   alias BSV.{PrivateKey, PublicKey, SymmetricKey}
@@ -25,9 +34,10 @@ defmodule BSV.Message.Encrypted do
     with {:ok, signing_priv} <- PrivateKey.derive_child(sender, recipient, invoice_number),
          {:ok, recipient_derived} <- PublicKey.derive_child(recipient, sender, invoice_number),
          {:ok, shared_secret} <- PrivateKey.derive_shared_secret(signing_priv, recipient_derived) do
-      # x-coordinate of shared point as symmetric key
+      # Derive symmetric key from shared secret via SHA-256 (not raw x-coord)
       <<_prefix::8, x_coord::binary-size(32)>> = shared_secret.point
-      skey = SymmetricKey.new(x_coord)
+      derived_key = BSV.Crypto.sha256(x_coord)
+      skey = SymmetricKey.new(derived_key)
       {:ok, ciphertext} = SymmetricKey.encrypt(skey, message)
 
       sender_pub = PrivateKey.to_public_key(sender).point
@@ -49,8 +59,8 @@ defmodule BSV.Message.Encrypted do
                 key_id::binary-size(32), ciphertext::binary>>, %PrivateKey{} = recipient) do
     actual_recipient = PrivateKey.to_public_key(recipient).point
 
-    if recipient_bytes != actual_recipient do
-      {:error, "the encrypted message expects a recipient public key of #{Base.encode16(recipient_bytes, case: :lower)}, but the provided key is #{Base.encode16(actual_recipient, case: :lower)}"}
+    if not BSV.Crypto.secure_compare(recipient_bytes, actual_recipient) do
+      {:error, "recipient public key mismatch"}
     else
       with {:ok, sender} <- PublicKey.from_bytes(sender_bytes) do
         key_id_b64 = Base.encode64(key_id)
@@ -61,8 +71,20 @@ defmodule BSV.Message.Encrypted do
           {:ok, shared_secret} = PrivateKey.derive_shared_secret(recipient_derived, signing_pub)
 
           <<_prefix::8, x_coord::binary-size(32)>> = shared_secret.point
-          skey = SymmetricKey.new(x_coord)
-          SymmetricKey.decrypt(skey, ciphertext)
+
+          # Try new KDF (SHA-256) first, fall back to legacy (raw x-coord)
+          derived_key = BSV.Crypto.sha256(x_coord)
+          skey = SymmetricKey.new(derived_key)
+
+          case SymmetricKey.decrypt(skey, ciphertext) do
+            {:ok, _} = result ->
+              result
+
+            {:error, :decrypt_failed} ->
+              # Legacy fallback: raw x-coordinate as key
+              legacy_skey = SymmetricKey.new(x_coord)
+              SymmetricKey.decrypt(legacy_skey, ciphertext)
+          end
         end
       end
     end
