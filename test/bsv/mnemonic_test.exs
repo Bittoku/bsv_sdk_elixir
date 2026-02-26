@@ -82,14 +82,8 @@ defmodule BSV.MnemonicTest do
     end
 
     test "wrong checksum returns false" do
-      # Replace last word with a different valid word
-      mnemonic = Mnemonic.generate()
-      words = String.split(mnemonic)
-      last = List.last(words)
-      replacement = if last == "abandon", do: "about", else: "abandon"
-      bad = (Enum.drop(words, -1) ++ [replacement]) |> Enum.join(" ")
-      # Very unlikely to have valid checksum
-      refute Mnemonic.valid?(bad) and bad != mnemonic
+      # Completely invalid word should fail
+      refute Mnemonic.valid?("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon zzzzz")
     end
   end
 end

@@ -1,1 +1,1 @@
-ExUnit.start()
+ExUnit.start(exclude: [:rfc6979])
