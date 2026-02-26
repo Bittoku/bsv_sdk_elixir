@@ -72,6 +72,28 @@ defmodule BSV.Base58 do
     end
   end
 
+  @doc "Base58Check encode raw data (no version byte splitting). Appends 4-byte checksum."
+  @spec check_encode_raw(binary()) :: String.t()
+  def check_encode_raw(data) when is_binary(data) do
+    checksum = BSV.Crypto.sha256d(data) |> binary_part(0, 4)
+    encode(data <> checksum)
+  end
+
+  @doc "Base58Check decode raw data. Returns `{:ok, data}` or `{:error, reason}`."
+  @spec check_decode_raw(String.t()) :: {:ok, binary()} | {:error, String.t()}
+  def check_decode_raw(string) do
+    with {:ok, bin} <- decode(string),
+         true <- byte_size(bin) >= 5 || {:error, "too short"},
+         data_len = byte_size(bin) - 4,
+         <<data::binary-size(data_len), checksum::binary-size(4)>> = bin,
+         computed = BSV.Crypto.sha256d(data) |> binary_part(0, 4),
+         true <- checksum == computed || {:error, "invalid checksum"} do
+      {:ok, data}
+    else
+      {:error, _} = err -> err
+    end
+  end
+
   @doc "Base58Check decode, raising on error."
   @spec check_decode!(String.t()) :: {non_neg_integer(), binary()}
   def check_decode!(string) do
