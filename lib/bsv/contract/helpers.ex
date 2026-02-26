@@ -82,6 +82,45 @@ defmodule BSV.Contract.Helpers do
     ctx |> push(<<0>>) |> op_cat() |> op_bin2num()
   end
 
+  @doc """
+  Sign the transaction context and push the DER signature (with sighash flag) onto the script.
+
+  If the contract has a transaction context (`ctx`), computes the BIP-143 sighash
+  and signs with the private key. Otherwise pushes 71 zero bytes as a placeholder.
+
+  Accepts a single private key or a list (for multisig).
+  """
+  @spec sig(Contract.t(), BSV.PrivateKey.t() | [BSV.PrivateKey.t()]) :: Contract.t()
+  def sig(%Contract{} = ctx, keys) when is_list(keys) do
+    each(ctx, keys, fn key, acc -> sig(acc, key) end)
+  end
+
+  def sig(
+        %Contract{
+          ctx: {tx, vin},
+          opts: opts,
+          subject: %{source_output: source_output}
+        } = ctx,
+        %BSV.PrivateKey{} = privkey
+      )
+      when not is_nil(source_output) do
+    sighash_flag = Keyword.get(opts, :sighash_flag, 0x41)
+    locking_script_bin = BSV.Script.to_binary(source_output.locking_script)
+    satoshis = source_output.satoshis
+
+    {:ok, hash} =
+      BSV.Transaction.Sighash.signature_hash(tx, vin, locking_script_bin, sighash_flag, satoshis)
+
+    {:ok, der_sig} = BSV.PrivateKey.sign(privkey, hash)
+    signature = der_sig <> <<sighash_flag::8>>
+    Contract.script_push(ctx, {:data, signature})
+  end
+
+  def sig(%Contract{} = ctx, %BSV.PrivateKey{}) do
+    # No transaction context — push 71 zero bytes as placeholder
+    Contract.script_push(ctx, {:data, <<0::568>>})
+  end
+
   # --- Auto-generated opcode helpers ---
   # For every known opcode, define a pipeline function.
 
