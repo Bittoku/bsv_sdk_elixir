@@ -42,12 +42,7 @@ defmodule BSV.PrivateKeyTest do
     assert BSV.PublicKey.verify(pubkey, msg, sig)
   end
 
-  @tag :rfc6979
   test "RFC 6979: signing same hash twice produces identical DER output" do
-    # This test verifies RFC 6979 deterministic nonce generation.
-    # Erlang/OTP's :crypto.sign/4 currently uses random k even on OpenSSL 3.x,
-    # so this test is expected to fail until OTP adds deterministic-k support.
-    # The test is tagged :rfc6979 so it can be excluded from CI.
     key = BSV.PrivateKey.generate()
     hash = :crypto.hash(:sha256, "deterministic nonce test")
     {:ok, sig1} = BSV.PrivateKey.sign(key, hash)

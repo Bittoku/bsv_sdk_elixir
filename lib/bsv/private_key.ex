@@ -31,8 +31,6 @@ defmodule BSV.PrivateKey do
 
   # secp256k1 curve order
   @n 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-  @n_half div(@n, 2)
-
   @doc "Generate a random private key."
   @spec generate() :: t()
   def generate do
@@ -95,8 +93,7 @@ defmodule BSV.PrivateKey do
   @doc "Sign a 32-byte message hash with this key. Returns DER-encoded signature with low-S."
   @spec sign(t(), binary()) :: {:ok, binary()}
   def sign(%__MODULE__{raw: raw}, <<message_hash::binary-size(32)>>) do
-    der = :crypto.sign(:ecdsa, :sha256, {:digest, message_hash}, [raw, :secp256k1])
-    {:ok, normalize_low_s(der)}
+    BSV.Crypto.ECDSA.sign(raw, message_hash)
   end
 
   @doc "Derive the public key from this private key."
@@ -178,28 +175,4 @@ defmodule BSV.PrivateKey do
   defp pad_to(bin, len) when byte_size(bin) >= len, do: bin
   defp pad_to(bin, len), do: :binary.copy(<<0>>, len - byte_size(bin)) <> bin
 
-  defp normalize_low_s(der) do
-    case der do
-      <<0x30, _total_len::8, 0x02, r_len::8, r::binary-size(r_len), 0x02, s_len::8,
-        s::binary-size(s_len)>> ->
-        s_int = :binary.decode_unsigned(s, :big)
-
-        if s_int > @n_half do
-          new_s_int = @n - s_int
-          new_s = :binary.encode_unsigned(new_s_int, :big)
-          new_s = if :binary.first(new_s) >= 0x80, do: <<0x00, new_s::binary>>, else: new_s
-          new_s_len = byte_size(new_s)
-          r_part = <<0x02, r_len::8, r::binary>>
-          s_part = <<0x02, new_s_len::8, new_s::binary>>
-          total = byte_size(r_part) + byte_size(s_part)
-          <<0x30, total::8, r_part::binary, s_part::binary>>
-        else
-          der
-        end
-
-      _ ->
-        # Non-standard DER encoding; return as-is rather than crash
-        der
-    end
-  end
 end
