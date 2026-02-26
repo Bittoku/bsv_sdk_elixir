@@ -1,6 +1,16 @@
 defmodule BSV.Crypto.ECDSA do
   @moduledoc """
   Pure-Elixir ECDSA signing on secp256k1 with RFC 6979 deterministic nonces.
+
+  ## Security Note — Timing Side-Channel
+
+  The scalar multiplication uses a standard double-and-add algorithm that is
+  **not constant-time**. The BEAM's non-deterministic scheduling provides
+  incidental protection, but this should not be relied upon for HSM-grade or
+  hardware-adjacent signing. For high-value use cases, consider a NIF wrapping
+  libsecp256k1 which provides constant-time scalar multiplication.
+
+  This implementation is suitable for application-layer Bitcoin signing.
   """
 
   @n 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
@@ -30,6 +40,10 @@ defmodule BSV.Crypto.ECDSA do
     k_inv = mod_inverse(k, @n)
     s = rem(k_inv * rem(z + r * d, @n), @n)
     s = if s > @n_half, do: @n - s, else: s
+
+    # Defense-in-depth: degenerate signature check (astronomically unlikely)
+    if r == 0 or s == 0, do: raise("degenerate ECDSA signature: r=0 or s=0")
+
     {r, s}
   end
 
@@ -57,6 +71,9 @@ defmodule BSV.Crypto.ECDSA do
   def ec_point_add({x1, y1}, {x2, y2}) when x1 == x2 and y1 == y2 do
     ec_point_double({x1, y1})
   end
+
+  # Additive inverses: P + (-P) = infinity
+  def ec_point_add({x1, _y1}, {x2, _y2}) when x1 == x2, do: :infinity
 
   def ec_point_add({x1, y1}, {x2, y2}) do
     lam = rem(rem(y2 - y1 + @p * 2, @p) * mod_inverse(rem(x2 - x1 + @p * 2, @p), @p), @p)
