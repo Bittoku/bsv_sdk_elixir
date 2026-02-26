@@ -136,7 +136,10 @@ defmodule BSV.PublicKey do
     bx_int = :binary.decode_unsigned(bx, :big)
     by_int = :binary.decode_unsigned(by, :big)
 
-    if ax_int == bx_int and ay_int == by_int do
+    if ax_int == bx_int and ay_int != by_int do
+      # Additive inverses: P + (-P) = point at infinity
+      {:error, :point_at_infinity}
+    else if ax_int == bx_int and ay_int == by_int do
       # Point doubling
       lambda = mod_mul(mod_mul(3, mod_mul(ax_int, ax_int, p), p), mod_inv(mod_mul(2, ay_int, p), p), p)
       rx = mod_sub(mod_mul(lambda, lambda, p), mod_mul(2, ax_int, p), p)
@@ -148,6 +151,7 @@ defmodule BSV.PublicKey do
       rx = mod_sub(mod_sub(mod_mul(lambda, lambda, p), ax_int, p), bx_int, p)
       ry = mod_sub(mod_mul(lambda, mod_sub(ax_int, rx, p), p), ay_int, p)
       encode_point(rx, ry)
+    end
     end
   end
 

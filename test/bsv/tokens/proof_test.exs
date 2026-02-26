@@ -2,7 +2,7 @@ defmodule BSV.Tokens.ProofTest do
   use ExUnit.Case, async: true
 
   alias BSV.{Crypto, Transaction, PrivateKey, PublicKey}
-  alias BSV.Transaction.{Input, Output, P2PKH}
+  alias BSV.Transaction.{Input, Output}
   alias BSV.Tokens.Proof
 
   # Build a simple test transaction with known structure

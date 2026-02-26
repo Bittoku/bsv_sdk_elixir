@@ -79,7 +79,7 @@ defmodule BSV.Tokens.Script.StasBtgBuilderTest do
     {:ok, script} = StasBtgBuilder.build_stas_btg_locking_script(owner_pkh, rpkh, true)
     script_len = byte_size(Script.to_binary(script))
 
-    preamble = StasBtgBuilder.build_checkpoint_gate(rpkh)
+    _preamble = StasBtgBuilder.build_checkpoint_gate(rpkh)
     # Total should be reasonable (preamble + gate + body + control flow opcodes)
     assert script_len > 1460
   end

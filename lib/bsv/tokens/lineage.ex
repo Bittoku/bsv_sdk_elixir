@@ -56,6 +56,10 @@ defmodule BSV.Tokens.Lineage do
   @doc """
   Validate a token UTXO's lineage back to the genesis transaction.
 
+  **Note:** Only the first input of each transaction is followed during ancestor
+  traversal. Multi-input token merges are not fully validated — only the lineage
+  through input 0 is checked.
+
   The `tx_fetcher` is a function `(txid :: binary -> {:ok, raw_tx} | {:error, reason})`.
 
   Returns `{:ok, updated_validator}` on success.

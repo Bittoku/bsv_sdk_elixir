@@ -71,6 +71,13 @@ mix test --cover   # ~91% coverage
 mix dialyzer       # typespec verification
 ```
 
+## Production Deployment
+
+- Set `ERL_CRASH_DUMP=/dev/null` or start the VM with `+d` to prevent crash
+  dumps from being written. Crash dumps can contain sensitive key material
+  held in process memory.
+- Ensure `erl_crash.dump` is in your `.gitignore` (included by default).
+
 ## License
 
 MIT

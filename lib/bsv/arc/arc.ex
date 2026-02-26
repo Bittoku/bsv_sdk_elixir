@@ -55,7 +55,7 @@ defmodule BSV.ARC.Client do
   defp status_validated(client, txid) do
     headers = build_headers(client.config)
 
-    case Req.get(client.req, url: "/tx/#{txid}", headers: headers) do
+    case Req.get(client.req, url: "/tx/#{URI.encode_www_form(txid)}", headers: headers) do
       {:ok, %Req.Response{body: body}} when is_map(body) ->
         {:ok, ArcResponse.from_json(body)}
 

@@ -19,13 +19,13 @@ defmodule BSV.JungleBus.Client do
   @doc "Get a transaction by its ID."
   @spec get_transaction(t(), String.t()) :: {:ok, Transaction.t()} | {:error, term()}
   def get_transaction(%__MODULE__{} = client, txid) do
-    do_request(client, "/transaction/get/#{txid}", &Transaction.from_json/1)
+    do_request(client, "/transaction/get/#{URI.encode_www_form(txid)}", &Transaction.from_json/1)
   end
 
   @doc "Get address transaction metadata."
   @spec get_address_transactions(t(), String.t()) :: {:ok, [AddressInfo.t()]} | {:error, term()}
   def get_address_transactions(%__MODULE__{} = client, address) do
-    do_request(client, "/address/get/#{address}", fn data ->
+    do_request(client, "/address/get/#{URI.encode_www_form(address)}", fn data ->
       parse_list(data, &AddressInfo.from_json/1)
     end)
   end
@@ -34,7 +34,7 @@ defmodule BSV.JungleBus.Client do
   @spec get_address_transaction_details(t(), String.t()) ::
           {:ok, [Transaction.t()]} | {:error, term()}
   def get_address_transaction_details(%__MODULE__{} = client, address) do
-    do_request(client, "/address/transactions/#{address}", fn data ->
+    do_request(client, "/address/transactions/#{URI.encode_www_form(address)}", fn data ->
       parse_list(data, &Transaction.from_json/1)
     end)
   end
@@ -42,7 +42,7 @@ defmodule BSV.JungleBus.Client do
   @doc "Get a block header by hash or height."
   @spec get_block_header(t(), String.t()) :: {:ok, BlockHeader.t()} | {:error, term()}
   def get_block_header(%__MODULE__{} = client, block) do
-    do_request(client, "/block_header/get/#{block}", &BlockHeader.from_json/1)
+    do_request(client, "/block_header/get/#{URI.encode_www_form(block)}", &BlockHeader.from_json/1)
   end
 
   @doc "List block headers starting from a given block."
@@ -51,7 +51,7 @@ defmodule BSV.JungleBus.Client do
   def get_block_headers(%__MODULE__{} = client, from_block, limit) do
     do_request(
       client,
-      "/block_header/list/#{from_block}?limit=#{limit}",
+      "/block_header/list/#{URI.encode_www_form(from_block)}?limit=#{limit}",
       fn data -> parse_list(data, &BlockHeader.from_json/1) end
     )
   end

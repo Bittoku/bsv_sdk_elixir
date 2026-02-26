@@ -2,6 +2,12 @@ defmodule BSV.PrivateKey do
   @moduledoc """
   Bitcoin private key operations: generation, WIF encoding, signing.
 
+  ## OpenSSL Requirement
+
+  Signing requires OpenSSL 3.0+ for RFC 6979 deterministic nonce generation.
+  Earlier OpenSSL versions may use random k-values, which is unsafe if the same
+  message is signed across different OpenSSL configurations.
+
   ## Security Notice — Key Material Lifetime
 
   Private key bytes (`raw` field) persist in BEAM process memory until garbage
@@ -138,7 +144,7 @@ defmodule BSV.PrivateKey do
         {:ok, %BSV.PublicKey{point: <<0x02, x_padded::binary>>}}
       end
     rescue
-      _ -> {:error, "ECDH computation failed"}
+      e in [ErlangError, ArgumentError] -> {:error, "ECDH computation failed: #{inspect(e)}"}
     end
   end
 

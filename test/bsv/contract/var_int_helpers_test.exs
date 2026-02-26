@@ -29,7 +29,6 @@ defmodule BSV.Contract.VarIntHelpersTest do
     end
   end
 
-  import BSV.Contract.Helpers
   import BSV.Contract.VarIntHelpers
 
   def test_get_varint(ctx, _params), do: get_varint(ctx)

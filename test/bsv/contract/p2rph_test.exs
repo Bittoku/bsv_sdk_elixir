@@ -1,7 +1,7 @@
 defmodule BSV.Contract.P2RPHTest do
   use ExUnit.Case, async: true
 
-  alias BSV.{Contract, Crypto, Script}
+  alias BSV.{Contract, Crypto}
   alias BSV.Contract.P2RPH
 
   describe "generate_k/0 and get_r/1" do

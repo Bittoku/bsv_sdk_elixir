@@ -2,7 +2,7 @@ defmodule BSV.Tokens.Factory.StasBtgTest do
   use ExUnit.Case, async: true
 
   alias BSV.{Crypto, Script, Transaction, PrivateKey, PublicKey}
-  alias BSV.Transaction.{Input, Output, P2PKH}
+  alias BSV.Transaction.{Input, Output}
   alias BSV.Tokens.Factory.StasBtg, as: Factory
   alias BSV.Tokens.{Payment, Destination}
 

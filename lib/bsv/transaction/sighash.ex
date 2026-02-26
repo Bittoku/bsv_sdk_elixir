@@ -24,9 +24,13 @@ defmodule BSV.Transaction.Sighash do
         ) ::
           {:ok, <<_::256>>} | {:error, term()}
   def signature_hash(tx, input_index, prev_output_script_bin, sighash_type, satoshis) do
+    if band(sighash_type, 0x40) == 0 do
+      {:error, :missing_forkid}
+    else
     with {:ok, preimage} <-
            calc_preimage(tx, input_index, prev_output_script_bin, sighash_type, satoshis) do
       {:ok, Crypto.sha256d(preimage)}
+    end
     end
   end
 
@@ -46,7 +50,9 @@ defmodule BSV.Transaction.Sighash do
         sighash_type,
         satoshis
       ) do
-    if input_index >= length(tx.inputs) do
+    if band(sighash_type, 0x40) == 0 do
+      {:error, :missing_forkid}
+    else if input_index >= length(tx.inputs) do
       {:error, :input_index_out_of_range}
     else
       base_type = sighash_type |> band(@sighash_mask)
@@ -92,6 +98,7 @@ defmodule BSV.Transaction.Sighash do
           <<sighash_type::little-32>>
 
       {:ok, preimage}
+    end
     end
   end
 

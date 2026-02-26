@@ -40,7 +40,7 @@ defmodule BSV.Contract.ContractExtendedTest do
   use ExUnit.Case, async: true
 
   alias BSV.{Contract, PrivateKey, PublicKey}
-  alias BSV.Contract.{P2PKH, P2PK, P2MS, OpReturn, Raw}
+  alias BSV.Contract.{P2PKH, OpReturn}
   alias BSV.Transaction.{Input, Output}
 
   describe "to_txout/1" do

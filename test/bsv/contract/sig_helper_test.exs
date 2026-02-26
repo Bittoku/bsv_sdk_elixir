@@ -9,7 +9,7 @@ defmodule BSV.Contract.SigHelperTest do
   describe "sig/2 helper" do
     test "pushes placeholder when no tx context" do
       privkey = PrivateKey.generate()
-      contract = P2PKH.unlock(%{}, %{signature: <<>>, pubkey: <<>>})
+      _contract = P2PKH.unlock(%{}, %{signature: <<>>, pubkey: <<>>})
 
       # Manually test sig helper
       ctx = %Contract{mfa: {__MODULE__, :sig_test, [privkey]}, subject: %{}}
@@ -59,7 +59,7 @@ defmodule BSV.Contract.SigHelperTest do
       }
 
       # Build unlock contract with context
-      unlock_contract =
+      _unlock_contract =
         P2PKH.unlock(utxo, %{signature: <<>>, pubkey: pubkey_bin})
         |> Contract.put_ctx({spending_tx, 0})
 

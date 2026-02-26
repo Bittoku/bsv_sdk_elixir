@@ -5,6 +5,12 @@ defmodule BSV.Script.Interpreter do
   Executes unlocking and locking scripts to verify transaction inputs.
   Supports all standard opcodes including stack, arithmetic, crypto,
   comparison, flow control, and splice operations.
+
+  ## Limitations
+
+  OP_CHECKLOCKTIMEVERIFY (0xB1) and OP_CHECKSEQUENCEVERIFY (0xB2) are currently
+  treated as NOPs and are not fully validated against transaction lock_time or
+  input sequence numbers.
   """
 
   import Bitwise

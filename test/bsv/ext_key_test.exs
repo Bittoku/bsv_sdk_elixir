@@ -1,6 +1,6 @@
 defmodule BSV.ExtKeyTest do
   use ExUnit.Case, async: true
-  alias BSV.{ExtKey, Mnemonic, PublicKey}
+  alias BSV.{ExtKey, Mnemonic}
 
   # BIP-32 test vector 1
   # Seed: 000102030405060708090a0b0c0d0e0f
@@ -12,8 +12,8 @@ defmodule BSV.ExtKeyTest do
       assert master.depth == 0
       assert master.fingerprint == <<0, 0, 0, 0>>
       assert master.child_index == 0
-      assert master.privkey != nil
-      assert master.pubkey != nil
+      assert is_struct(master.privkey)
+      assert is_struct(master.pubkey)
     end
 
     test "known BIP-32 test vector 1 master key" do

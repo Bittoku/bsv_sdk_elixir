@@ -77,7 +77,6 @@ defmodule BSV.Contract.PushTxHelpersTest do
     end
   end
 
-  import BSV.Contract.Helpers
   import BSV.Contract.PushTxHelpers
 
   def test_get_version(ctx, _), do: get_version(ctx)

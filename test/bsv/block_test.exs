@@ -1,6 +1,6 @@
 defmodule BSV.BlockTest do
   use ExUnit.Case, async: true
-  alias BSV.{Block, BlockHeader}
+  alias BSV.Block
 
   # Bitcoin genesis block (full, hex)
   # Header (80 bytes) + varint(1) + coinbase tx

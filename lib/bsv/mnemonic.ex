@@ -6,6 +6,9 @@ defmodule BSV.Mnemonic do
   deterministic wallets. Words are drawn from a standard 2048-word list and
   include a built-in checksum.
 
+  **Note:** The wordlist language is fixed at compile time and defaults to English.
+  Non-English BIP-39 wordlists are not currently supported.
+
   ## Examples
 
       iex> mnemonic = BSV.Mnemonic.generate()

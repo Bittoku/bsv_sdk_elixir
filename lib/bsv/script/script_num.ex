@@ -20,6 +20,8 @@ defmodule BSV.Script.ScriptNum do
       -1
   """
   @spec decode_num(binary()) :: integer()
+  # Note: negative zero (0x80) decodes to 0 per Bitcoin consensus rules.
+  # The sign bit is cleared, yielding abs_val XOR mask == 0.
   def decode_num(<<>>), do: 0
 
   def decode_num(bin) when is_binary(bin) do

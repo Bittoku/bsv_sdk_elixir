@@ -64,7 +64,7 @@ defmodule BSV.Base58 do
          payload_len = byte_size(bin) - 4,
          <<data::binary-size(payload_len), checksum::binary-size(4)>> = bin,
          computed = BSV.Crypto.sha256d(data) |> binary_part(0, 4),
-         true <- checksum == computed || {:error, "invalid checksum"},
+         true <- BSV.Crypto.secure_compare(checksum, computed) || {:error, "invalid checksum"},
          <<version::8, payload::binary>> = data do
       {:ok, {version, payload}}
     else
@@ -87,7 +87,7 @@ defmodule BSV.Base58 do
          data_len = byte_size(bin) - 4,
          <<data::binary-size(data_len), checksum::binary-size(4)>> = bin,
          computed = BSV.Crypto.sha256d(data) |> binary_part(0, 4),
-         true <- checksum == computed || {:error, "invalid checksum"} do
+         true <- BSV.Crypto.secure_compare(checksum, computed) || {:error, "invalid checksum"} do
       {:ok, data}
     else
       {:error, _} = err -> err

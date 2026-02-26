@@ -55,14 +55,15 @@ defmodule BSV.ExtKey do
   @tprv_version <<0x04, 0x35, 0x83, 0x94>>
   @tpub_version <<0x04, 0x35, 0x87, 0xCF>>
 
-  @mersenne_prime 2_147_483_647
-  @hardened_offset @mersenne_prime + 1
+  # 2^31 - 1: maximum index for normal (non-hardened) BIP-32 derivation
+  @hardened_threshold 2_147_483_647
+  @hardened_offset @hardened_threshold + 1
 
   # secp256k1 curve order
   @n 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
-  defguardp normal?(index) when index >= 0 and index <= @mersenne_prime
-  defguardp hardened?(index) when index > @mersenne_prime
+  defguardp normal?(index) when index >= 0 and index <= @hardened_threshold
+  defguardp hardened?(index) when index > @hardened_threshold
 
   @doc """
   Generate a new random master extended key.
@@ -84,16 +85,21 @@ defmodule BSV.ExtKey do
       <<d::binary-32, chain_code::binary-32>> =
         :crypto.mac(:hmac, :sha512, "Bitcoin seed", seed)
 
-      privkey = %PrivateKey{raw: d}
-      pubkey = PublicKey.from_private_key(privkey)
+      case PrivateKey.from_bytes(d) do
+        {:ok, privkey} ->
+          pubkey = PublicKey.from_private_key(privkey)
 
-      {:ok,
-       %__MODULE__{
-         version: version,
-         chain_code: chain_code,
-         privkey: privkey,
-         pubkey: pubkey
-       }}
+          {:ok,
+           %__MODULE__{
+             version: version,
+             chain_code: chain_code,
+             privkey: privkey,
+             pubkey: pubkey
+           }}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     else
       {:error, {:invalid_seed_length, byte_size(seed)}}
     end

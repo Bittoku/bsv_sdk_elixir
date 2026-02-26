@@ -35,19 +35,24 @@ defmodule BSV.Crypto do
   Always examines every byte regardless of where the first difference occurs.
   """
   @spec secure_compare(binary(), binary()) :: boolean()
-  def secure_compare(a, b) when byte_size(a) != byte_size(b), do: false
-
   def secure_compare(a, b) when is_binary(a) and is_binary(b) do
-    # Use :crypto.hash_equals/2 on OTP 26+, fall back to XOR accumulation
-    if function_exported?(:crypto, :hash_equals, 2) do
-      :crypto.hash_equals(a, b)
-    else
-      a_bytes = :binary.bin_to_list(a)
-      b_bytes = :binary.bin_to_list(b)
+    # Hash both inputs first to make timing independent of length differences.
+    # This prevents leaking length information through early return.
+    ha = :crypto.hash(:sha256, a)
+    hb = :crypto.hash(:sha256, b)
 
-      Enum.zip(a_bytes, b_bytes)
-      |> Enum.reduce(0, fn {x, y}, acc -> Bitwise.bor(acc, Bitwise.bxor(x, y)) end)
-      |> Kernel.==(0)
-    end
+    equal_hashes =
+      if function_exported?(:crypto, :hash_equals, 2) do
+        :crypto.hash_equals(ha, hb)
+      else
+        ha_bytes = :binary.bin_to_list(ha)
+        hb_bytes = :binary.bin_to_list(hb)
+
+        Enum.zip(ha_bytes, hb_bytes)
+        |> Enum.reduce(0, fn {x, y}, acc -> Bitwise.bor(acc, Bitwise.bxor(x, y)) end)
+        |> Kernel.==(0)
+      end
+
+    equal_hashes and byte_size(a) == byte_size(b)
   end
 end
