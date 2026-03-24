@@ -325,6 +325,193 @@ defmodule BSV.Tokens.Factory.Dstas do
     })
   end
 
+  @doc """
+  Build a DSTAS split transaction.
+
+  Splits a single STAS input into 1-4 STAS outputs. This is a semantic wrapper
+  around `build_dstas_base_tx/1` that enforces split-specific constraints:
+  exactly 1 STAS input and 1-4 destinations.
+
+  ## Parameters
+    * `config` - A `base_config()` map with:
+      * `:token_inputs` - Exactly 1 token input
+      * `:destinations` - 1-4 DSTAS output destinations
+      * Other fields as per `base_config()`
+
+  ## Returns
+    * `{:ok, transaction}` on success
+    * `{:error, reason}` on validation failure
+  """
+  @spec build_dstas_split_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_dstas_split_tx(config) do
+    cond do
+      length(config.token_inputs) != 1 ->
+        {:error, Error.invalid_destination("split requires exactly 1 STAS input")}
+
+      length(config.destinations) < 1 or length(config.destinations) > 4 ->
+        {:error, Error.invalid_destination("split requires 1-4 destinations")}
+
+      true ->
+        build_dstas_base_tx(%{config | spend_type: :transfer})
+    end
+  end
+
+  @doc """
+  Build a DSTAS merge transaction.
+
+  Merges exactly 2 STAS inputs into 1-2 STAS outputs. This is a semantic wrapper
+  around `build_dstas_base_tx/1` that enforces merge-specific constraints.
+
+  ## Parameters
+    * `config` - A `base_config()` map with:
+      * `:token_inputs` - Exactly 2 token inputs
+      * `:destinations` - 1-2 DSTAS output destinations
+      * Other fields as per `base_config()`
+
+  ## Returns
+    * `{:ok, transaction}` on success
+    * `{:error, reason}` on validation failure
+  """
+  @spec build_dstas_merge_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_dstas_merge_tx(config) do
+    cond do
+      length(config.token_inputs) != 2 ->
+        {:error, Error.invalid_destination("merge requires exactly 2 STAS inputs")}
+
+      length(config.destinations) < 1 or length(config.destinations) > 2 ->
+        {:error, Error.invalid_destination("merge requires 1-2 destinations")}
+
+      true ->
+        build_dstas_base_tx(%{config | spend_type: :transfer})
+    end
+  end
+
+  @doc """
+  Build a DSTAS confiscation transaction.
+
+  Confiscates token UTXOs using spending type 3 (confiscation authority path).
+  Frozen inputs CAN be confiscated. The scheme must have confiscation enabled
+  and service fields must include the confiscation authority.
+
+  ## Parameters
+    * `config` - A `base_config()` map. The spend_type will be overridden
+      to `:confiscation`.
+
+  ## Returns
+    * `{:ok, transaction}` on success
+    * `{:error, reason}` on validation failure
+  """
+  @spec build_dstas_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_dstas_confiscate_tx(config) do
+    build_dstas_base_tx(%{config | spend_type: :confiscation})
+  end
+
+  @doc """
+  Build a DSTAS redeem transaction.
+
+  Redeems STAS tokens back to regular P2PKH satoshis. Only the issuer can redeem.
+  This is NOT a wrapper around `build_dstas_base_tx/1` because the primary output
+  is P2PKH rather than DSTAS.
+
+  ## Parameters
+    * `config` - A map with:
+      * `:token_input` - A single `TokenInput` (the STAS UTXO to redeem)
+      * `:fee_txid`, `:fee_vout`, `:fee_satoshis`, `:fee_locking_script`,
+        `:fee_private_key` - Funding input for fees
+      * `:redeem_satoshis` - Amount to redeem as P2PKH output
+      * `:redeem_pkh` - The 20-byte pubkey hash for the P2PKH redeem output
+      * `:remaining_destinations` - Optional list of `DstasOutputParams` for
+        remaining STAS outputs (default `[]`)
+      * `:fee_rate` - Fee rate in sat/KB
+
+  ## Rules
+    * Token input owner must be the issuer (owner_pkh == redemption_pkh from script)
+    * Frozen inputs cannot be redeemed
+    * Conservation: stas_in == redeem_satoshis + sum(remaining STAS outputs)
+    * Uses spending type 1 (regular)
+
+  ## Returns
+    * `{:ok, transaction}` on success
+    * `{:error, reason}` on validation failure
+  """
+  @spec build_dstas_redeem_tx(map()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_dstas_redeem_tx(config) do
+    ti = config.token_input
+    remaining = Map.get(config, :remaining_destinations, [])
+
+    # Parse locking script to extract owner and redemption PKH
+    parsed = BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
+
+    cond do
+      parsed.script_type != :dstas ->
+        {:error, Error.invalid_script("token input is not a valid DSTAS script")}
+
+      parsed.dstas.frozen ->
+        {:error, Error.invalid_destination("frozen inputs cannot be redeemed")}
+
+      parsed.dstas.owner != parsed.dstas.redemption ->
+        {:error,
+         Error.invalid_destination("only the issuer can redeem (owner must match redemption PKH)")}
+
+      true ->
+        total_remaining = Enum.sum(Enum.map(remaining, & &1.satoshis))
+        expected = config.redeem_satoshis + total_remaining
+
+        if ti.satoshis != expected do
+          {:error, Error.amount_mismatch(ti.satoshis, expected)}
+        else
+          # Build P2PKH redeem output
+          redeem_address = BSV.Base58.check_encode(config.redeem_pkh, 0x00)
+
+          with {:ok, redeem_script} <- Address.to_script(redeem_address) do
+            redeem_output = %Output{satoshis: config.redeem_satoshis, locking_script: redeem_script}
+
+            # Build optional remaining DSTAS outputs
+            with {:ok, dstas_outputs} <- build_dstas_dest_outputs(remaining) do
+              token_input =
+                make_input(ti.txid, ti.vout, ti.satoshis, ti.locking_script)
+
+              fee_input =
+                make_input(
+                  config.fee_txid,
+                  config.fee_vout,
+                  config.fee_satoshis,
+                  config.fee_locking_script
+                )
+
+              tx = %Transaction{
+                inputs: [token_input, fee_input],
+                outputs: [redeem_output | dstas_outputs]
+              }
+
+              with {:ok, tx} <-
+                     add_fee_change(
+                       tx,
+                       config.fee_satoshis,
+                       config.fee_private_key,
+                       config.fee_rate
+                     ) do
+                # Sign token input with DSTAS template (spending type 1 = regular)
+                template = DstasTemplate.unlock(ti.private_key, :transfer)
+
+                with {:ok, sig} <- DstasTemplate.sign(template, tx, 0) do
+                  tx = set_unlocking_script(tx, 0, sig)
+
+                  # Sign fee input with P2PKH
+                  unlocker = P2PKH.unlock(config.fee_private_key)
+
+                  case P2PKH.sign(unlocker, tx, 1) do
+                    {:ok, sig} -> {:ok, set_unlocking_script(tx, 1, sig)}
+                    error -> error
+                  end
+                end
+              end
+            end
+          end
+        end
+    end
+  end
+
   @doc "Build a DSTAS swap flow transaction."
   @spec build_dstas_swap_flow_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_dstas_swap_flow_tx(config) do
