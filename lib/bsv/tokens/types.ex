@@ -37,10 +37,29 @@ defmodule BSV.Tokens.DstasSpendType do
 end
 
 defmodule BSV.Tokens.ActionData do
-  @moduledoc "Additional data attached to a dSTAS action."
+  @moduledoc """
+  Additional data attached to a dSTAS action.
+
+  ## Swap Variant
+
+  The swap variant carries the full 61-byte swap leg structure:
+  - `requested_script_hash` (32 bytes) — SHA256 of counterparty's locking script tail
+  - `requested_pkh` (20 bytes) — requested recipient public key hash
+  - `rate_numerator` (uint32 LE) — exchange rate numerator
+  - `rate_denominator` (uint32 LE) — exchange rate denominator
+
+  Special case: both numerator=0 and denominator=0 indicates swap cancellation.
+  """
+
+  @type swap_fields :: %{
+          requested_script_hash: <<_::256>>,
+          requested_pkh: <<_::160>>,
+          rate_numerator: non_neg_integer(),
+          rate_denominator: non_neg_integer()
+        }
 
   @type t ::
-          {:swap, <<_::256>>}
+          {:swap, swap_fields()}
           | {:custom, binary()}
 end
 
@@ -70,7 +89,14 @@ defmodule BSV.Tokens.DstasDestination do
 end
 
 defmodule BSV.Tokens.DstasOutputParams do
-  @moduledoc "Parameters for a DSTAS output in spend operations."
+  @moduledoc """
+  Parameters for a DSTAS output in spend operations.
+
+  The optional `action_data` field allows encoding swap action data or custom
+  data into the output's locking script. For swap principal outputs, this should
+  be `nil` (neutral marker). For swap remainder outputs, this should inherit
+  from the origin leg's action data.
+  """
 
   @type t :: %__MODULE__{
           satoshis: non_neg_integer(),
@@ -79,7 +105,8 @@ defmodule BSV.Tokens.DstasOutputParams do
           frozen: boolean(),
           freezable: boolean(),
           service_fields: [binary()],
-          optional_data: [binary()]
+          optional_data: [binary()],
+          action_data: BSV.Tokens.ActionData.t() | nil
         }
 
   defstruct [
@@ -89,7 +116,8 @@ defmodule BSV.Tokens.DstasOutputParams do
     frozen: false,
     freezable: true,
     service_fields: [],
-    optional_data: []
+    optional_data: [],
+    action_data: nil
   ]
 end
 
