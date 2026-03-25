@@ -2,7 +2,8 @@ defmodule BSV.Tokens.Template.Stas do
   @moduledoc """
   STAS unlocking script template.
 
-  Identical to P2PKH: `<sig> <pubkey>`.
+  Supports both legacy (P2PKH-only, no spend type) and v3 (with spend type)
+  signing modes. The signing output is identical: `<sig> <pubkey>`.
   """
 
   @behaviour BSV.Transaction.Template
@@ -10,18 +11,26 @@ defmodule BSV.Tokens.Template.Stas do
   alias BSV.{Script, PrivateKey, PublicKey}
   alias BSV.Transaction.Sighash
 
-  defstruct [:private_key, sighash_flag: 0x41]
+  defstruct [:private_key, :spend_type, sighash_flag: 0x41]
 
   @type t :: %__MODULE__{
           private_key: PrivateKey.t(),
+          spend_type: BSV.Tokens.SpendType.t() | nil,
           sighash_flag: non_neg_integer()
         }
 
-  @doc "Create a STAS unlocker struct with the given private key."
+  @doc """
+  Create a STAS unlocker struct.
+
+  ## Options
+  - `:spend_type` — `SpendType.t()` for v3 scripts (default: `nil` for legacy)
+  - `:sighash_flag` — sighash flag byte (default: `0x41`)
+  """
   @spec unlock(PrivateKey.t(), keyword()) :: t()
   def unlock(%PrivateKey{} = key, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
-    %__MODULE__{private_key: key, sighash_flag: flag}
+    spend_type = Keyword.get(opts, :spend_type, nil)
+    %__MODULE__{private_key: key, spend_type: spend_type, sighash_flag: flag}
   end
 
   @doc "Sign a STAS input, producing a P2PKH-style unlocking script."
