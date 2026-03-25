@@ -24,16 +24,17 @@ defmodule BSV.Tokens.Destination do
 end
 
 defmodule BSV.Tokens.DstasSpendType do
-  @moduledoc "dSTAS spending operation type."
+  @moduledoc """
+  dSTAS spending operation type.
 
-  @type t :: :transfer | :freeze_unfreeze | :confiscation | :swap_cancellation
+  **Deprecated:** Use `BSV.Tokens.SpendType` instead. This module delegates
+  to `SpendType` for backward compatibility.
+  """
+
+  @type t :: BSV.Tokens.SpendType.t()
 
   @doc "Convert a spend type atom to its wire-format byte value."
-  @spec to_byte(t()) :: byte()
-  def to_byte(:transfer), do: 1
-  def to_byte(:freeze_unfreeze), do: 2
-  def to_byte(:confiscation), do: 3
-  def to_byte(:swap_cancellation), do: 4
+  defdelegate to_byte(spend_type), to: BSV.Tokens.SpendType
 end
 
 defmodule BSV.Tokens.ActionData do
@@ -104,6 +105,7 @@ defmodule BSV.Tokens.DstasOutputParams do
           redemption_pkh: <<_::160>>,
           frozen: boolean(),
           freezable: boolean(),
+          confiscatable: boolean(),
           service_fields: [binary()],
           optional_data: [binary()],
           action_data: BSV.Tokens.ActionData.t() | nil
@@ -115,6 +117,7 @@ defmodule BSV.Tokens.DstasOutputParams do
     :redemption_pkh,
     frozen: false,
     freezable: true,
+    confiscatable: false,
     service_fields: [],
     optional_data: [],
     action_data: nil

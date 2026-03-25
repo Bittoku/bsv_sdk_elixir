@@ -85,8 +85,17 @@ defmodule BSV.Tokens.Script.DstasBuilder do
     Script.from_binary(script)
   end
 
-  @doc "Build flags byte from boolean options."
-  @spec build_dstas_flags(boolean()) :: binary()
+  @doc """
+  Build flags byte from boolean options.
+
+  Accepts either a single boolean (legacy: freezable only) or a
+  `ScriptFlags` struct for full flag support.
+  """
+  @spec build_dstas_flags(boolean() | BSV.Tokens.ScriptFlags.t()) :: binary()
+  def build_dstas_flags(%BSV.Tokens.ScriptFlags{} = flags) do
+    BSV.Tokens.ScriptFlags.encode(flags)
+  end
+
   def build_dstas_flags(true), do: <<0x01>>
   def build_dstas_flags(false), do: <<0x00>>
 
