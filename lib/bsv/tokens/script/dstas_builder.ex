@@ -22,7 +22,7 @@ defmodule BSV.Tokens.Script.DstasBuilder do
           <<_::160>>,
           BSV.Tokens.ActionData.t() | nil,
           boolean(),
-          boolean(),
+          boolean() | BSV.Tokens.ScriptFlags.t(),
           [binary()],
           [binary()]
         ) :: {:ok, BSV.Script.t()} | {:error, term()}
@@ -31,7 +31,7 @@ defmodule BSV.Tokens.Script.DstasBuilder do
         <<redemption_pkh::binary-size(20)>>,
         action_data,
         frozen,
-        freezable,
+        freezable_or_flags,
         service_fields,
         optional_data
       ) do
@@ -67,7 +67,7 @@ defmodule BSV.Tokens.Script.DstasBuilder do
     script = script <> <<0x14>> <> redemption_pkh
 
     # 6. Flags
-    flags = build_dstas_flags(freezable)
+    flags = build_dstas_flags(freezable_or_flags)
     script = script <> push_data(flags)
 
     # 7. Service fields
