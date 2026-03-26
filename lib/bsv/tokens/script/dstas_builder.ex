@@ -22,7 +22,7 @@ defmodule BSV.Tokens.Script.DstasBuilder do
           <<_::160>>,
           BSV.Tokens.ActionData.t() | nil,
           boolean(),
-          boolean(),
+          boolean() | BSV.Tokens.ScriptFlags.t(),
           [binary()],
           [binary()]
         ) :: {:ok, BSV.Script.t()} | {:error, term()}
@@ -31,7 +31,7 @@ defmodule BSV.Tokens.Script.DstasBuilder do
         <<redemption_pkh::binary-size(20)>>,
         action_data,
         frozen,
-        freezable,
+        freezable_or_flags,
         service_fields,
         optional_data
       ) do
@@ -45,10 +45,17 @@ defmodule BSV.Tokens.Script.DstasBuilder do
     # 2. Action data encoding
     script =
       case {frozen, action_data} do
-        {false, nil} -> script <> <<0x00>>
-        {true, nil} -> script <> <<0x52>>
-        {_, {:swap, hash}} -> script <> push_data(hash)
-        {_, {:custom, bytes}} -> script <> push_data(bytes)
+        {false, nil} ->
+          script <> <<0x00>>
+
+        {true, nil} ->
+          script <> <<0x52>>
+
+        {_, {:swap, %{} = fields}} ->
+          script <> push_data(encode_swap_action_data(fields))
+
+        {_, {:custom, bytes}} ->
+          script <> push_data(bytes)
       end
 
     # 3. Base template
@@ -60,7 +67,7 @@ defmodule BSV.Tokens.Script.DstasBuilder do
     script = script <> <<0x14>> <> redemption_pkh
 
     # 6. Flags
-    flags = build_dstas_flags(freezable)
+    flags = build_dstas_flags(freezable_or_flags)
     script = script <> push_data(flags)
 
     # 7. Service fields
@@ -78,8 +85,17 @@ defmodule BSV.Tokens.Script.DstasBuilder do
     Script.from_binary(script)
   end
 
-  @doc "Build flags byte from boolean options."
-  @spec build_dstas_flags(boolean()) :: binary()
+  @doc """
+  Build flags byte from boolean options.
+
+  Accepts either a single boolean (legacy: freezable only) or a
+  `ScriptFlags` struct for full flag support.
+  """
+  @spec build_dstas_flags(boolean() | BSV.Tokens.ScriptFlags.t()) :: binary()
+  def build_dstas_flags(%BSV.Tokens.ScriptFlags{} = flags) do
+    BSV.Tokens.ScriptFlags.encode(flags)
+  end
+
   def build_dstas_flags(true), do: <<0x01>>
   def build_dstas_flags(false), do: <<0x00>>
 
@@ -98,4 +114,107 @@ defmodule BSV.Tokens.Script.DstasBuilder do
   def push_data(data) do
     <<0x4D, byte_size(data)::little-16>> <> data
   end
+
+  @doc """
+  Encode swap action data fields into a binary for embedding in a locking script.
+
+  Each swap leg is 61 bytes: 1 (kind 0x01) + 32 (hash) + 20 (pkh) + 4 (numerator LE) + 4 (denominator LE).
+
+  ## Parameters
+  - `fields` - Map with `:requested_script_hash` (32 bytes), `:requested_pkh` (20 bytes),
+    `:rate_numerator` (uint32), `:rate_denominator` (uint32)
+
+  ## Returns
+  A 61-byte binary encoding the swap action data.
+  """
+  @spec encode_swap_action_data(BSV.Tokens.ActionData.swap_fields()) :: binary()
+  def encode_swap_action_data(%{
+        requested_script_hash: <<hash::binary-size(32)>>,
+        requested_pkh: <<pkh::binary-size(20)>>,
+        rate_numerator: num,
+        rate_denominator: den
+      })
+      when is_integer(num) and num >= 0 and num <= 0xFFFFFFFF and
+             is_integer(den) and den >= 0 and den <= 0xFFFFFFFF do
+    <<0x01, hash::binary, pkh::binary, num::little-32, den::little-32>>
+  end
+
+  @doc """
+  Decode a swap action data binary into structured fields.
+
+  Parses one or more 61-byte swap legs from the binary. Each leg starts with
+  kind byte 0x01 followed by 32-byte hash, 20-byte PKH, and two uint32 LE values.
+
+  ## Parameters
+  - `data` - Binary starting with kind byte 0x01
+
+  ## Returns
+  `{:ok, swap_fields}` or `{:error, reason}`
+  """
+  @spec decode_swap_action_data(binary()) ::
+          {:ok, BSV.Tokens.ActionData.swap_fields()} | {:error, term()}
+  def decode_swap_action_data(
+        <<0x01, hash::binary-size(32), pkh::binary-size(20), num::little-32, den::little-32,
+          _rest::binary>>
+      ) do
+    {:ok,
+     %{
+       requested_script_hash: hash,
+       requested_pkh: pkh,
+       rate_numerator: num,
+       rate_denominator: den
+     }}
+  end
+
+  def decode_swap_action_data(_), do: {:error, :invalid_swap_action_data}
+
+  @doc """
+  Compute the requestedScriptHash for a DSTAS locking script.
+
+  Extracts the "tail" of a locking script (everything after the owner and action_data
+  fields), then returns SHA256(tail). This hash is used in swap action data to identify
+  the counterparty's expected locking script structure.
+
+  ## Parameters
+  - `locking_script` - Full DSTAS locking script binary
+
+  ## Returns
+  A 32-byte SHA256 hash of the locking script tail.
+  """
+  @spec compute_dstas_requested_script_hash(binary()) :: <<_::256>>
+  def compute_dstas_requested_script_hash(locking_script) when is_binary(locking_script) do
+    tail = extract_dstas_script_tail(locking_script)
+    :crypto.hash(:sha256, tail)
+  end
+
+  @doc """
+  Extract the locking script tail (everything after owner + action_data fields).
+
+  The DSTAS locking script layout is:
+  1. Owner field: OP_DATA_20 (0x14) + 20-byte PKH
+  2. Action data field: push_data or OP_FALSE(0x00) or OP_2(0x52)
+  3. Tail: everything from base template to end of script
+
+  ## Parameters
+  - `script` - Full DSTAS locking script binary
+
+  ## Returns
+  Binary containing everything after the action_data field.
+  """
+  @spec extract_dstas_script_tail(binary()) :: binary()
+  def extract_dstas_script_tail(<<0x14, _owner::binary-size(20), rest::binary>>) do
+    skip_push_data(rest)
+  end
+
+  # Skip a single push data item and return the remainder
+  defp skip_push_data(<<0x00, rest::binary>>), do: rest
+  defp skip_push_data(<<0x52, rest::binary>>), do: rest
+
+  defp skip_push_data(<<len, _data::binary-size(len), rest::binary>>)
+       when len >= 0x01 and len <= 0x4B,
+       do: rest
+
+  defp skip_push_data(<<0x4C, len, _data::binary-size(len), rest::binary>>), do: rest
+  defp skip_push_data(<<0x4D, len::little-16, _data::binary-size(len), rest::binary>>), do: rest
+  defp skip_push_data(<<_opcode, rest::binary>>), do: rest
 end

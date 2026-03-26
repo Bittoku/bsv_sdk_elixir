@@ -239,11 +239,23 @@ defmodule BSV.Tokens.Script.Reader do
 
         action_data_parsed =
           case action_data_raw do
-            <<hash::binary-size(32)>> -> {:swap, hash}
-            <<0x52>> -> nil
-            nil -> nil
-            <<>> -> nil
-            other -> {:custom, other}
+            <<0x01, _::binary>> = swap_data ->
+              case BSV.Tokens.Script.DstasBuilder.decode_swap_action_data(swap_data) do
+                {:ok, fields} -> {:swap, fields}
+                _ -> {:custom, swap_data}
+              end
+
+            <<0x52>> ->
+              nil
+
+            nil ->
+              nil
+
+            <<>> ->
+              nil
+
+            other ->
+              {:custom, other}
           end
 
         %ParsedScript{
