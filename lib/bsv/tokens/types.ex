@@ -1,15 +1,37 @@
 defmodule BSV.Tokens.Payment do
-  @moduledoc "A UTXO payment input for token transactions."
+  @moduledoc """
+  A UTXO payment input for token transactions.
+
+  The `signing_key` field accepts a `BSV.Tokens.SigningKey.t()`:
+  - `{:single, PrivateKey.t()}` for P2PKH
+  - `{:multi, [PrivateKey.t()], multisig_script}` for P2MPKH
+
+  For backward compatibility, the `private_key` field is still accepted but
+  deprecated — use `signing_key` instead.
+  """
 
   @type t :: %__MODULE__{
           txid: binary(),
           vout: non_neg_integer(),
           satoshis: non_neg_integer(),
           locking_script: BSV.Script.t(),
-          private_key: BSV.PrivateKey.t()
+          signing_key: BSV.Tokens.SigningKey.t(),
+          private_key: BSV.PrivateKey.t() | nil
         }
 
-  defstruct [:txid, :vout, :satoshis, :locking_script, :private_key]
+  defstruct [:txid, :vout, :satoshis, :locking_script, :signing_key, :private_key]
+
+  @doc """
+  Resolve the effective signing key: prefers `signing_key`, falls back to
+  wrapping `private_key` for backward compatibility.
+  """
+  @spec resolve_signing_key(t()) :: BSV.Tokens.SigningKey.t()
+  def resolve_signing_key(%__MODULE__{signing_key: sk}) when sk != nil, do: sk
+
+  def resolve_signing_key(%__MODULE__{private_key: pk}) when pk != nil,
+    do: BSV.Tokens.SigningKey.single(pk)
+
+  def resolve_signing_key(_), do: raise("Payment has neither signing_key nor private_key")
 end
 
 defmodule BSV.Tokens.Destination do
@@ -125,15 +147,30 @@ defmodule BSV.Tokens.DstasOutputParams do
 end
 
 defmodule BSV.Tokens.TokenInput do
-  @moduledoc "A token input for DSTAS spend operations."
+  @moduledoc """
+  A token input for DSTAS spend operations.
+
+  The `signing_key` field accepts a `BSV.Tokens.SigningKey.t()`.
+  For backward compatibility, `private_key` is still accepted but deprecated.
+  """
 
   @type t :: %__MODULE__{
           txid: binary(),
           vout: non_neg_integer(),
           satoshis: non_neg_integer(),
           locking_script: BSV.Script.t(),
-          private_key: BSV.PrivateKey.t()
+          signing_key: BSV.Tokens.SigningKey.t(),
+          private_key: BSV.PrivateKey.t() | nil
         }
 
-  defstruct [:txid, :vout, :satoshis, :locking_script, :private_key]
+  defstruct [:txid, :vout, :satoshis, :locking_script, :signing_key, :private_key]
+
+  @doc "Resolve the effective signing key."
+  @spec resolve_signing_key(t()) :: BSV.Tokens.SigningKey.t()
+  def resolve_signing_key(%__MODULE__{signing_key: sk}) when sk != nil, do: sk
+
+  def resolve_signing_key(%__MODULE__{private_key: pk}) when pk != nil,
+    do: BSV.Tokens.SigningKey.single(pk)
+
+  def resolve_signing_key(_), do: raise("TokenInput has neither signing_key nor private_key")
 end

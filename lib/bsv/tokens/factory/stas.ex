@@ -18,11 +18,11 @@ defmodule BSV.Tokens.Factory.Stas do
   service fields, spending types, and per-transaction note outputs.
   """
 
-  alias BSV.{Crypto, Script, PrivateKey, PublicKey}
+  alias BSV.{Crypto, Script, PrivateKey}
   alias BSV.Transaction
   alias BSV.Transaction.{Input, Output, P2PKH}
   alias BSV.Script.Address
-  alias BSV.Tokens.Error
+  alias BSV.Tokens.{Error, Payment, SigningKey}
   alias BSV.Tokens.Script.StasBuilder
   alias BSV.Tokens.Script.DstasBuilder
   alias BSV.Tokens.Template.Stas, as: StasTemplate
@@ -96,8 +96,14 @@ defmodule BSV.Tokens.Factory.Stas do
     base + inputs_size + outputs_size
   end
 
+  defp change_address_from_signing_key(signing_key) do
+    pkh = SigningKey.hash160(signing_key)
+    BSV.Base58.check_encode(pkh, 0x00)
+  end
+
+  # Backward compat: also accept raw PrivateKey
   defp change_address(private_key) do
-    pubkey = PrivateKey.to_public_key(private_key) |> PublicKey.compress()
+    pubkey = PrivateKey.to_public_key(private_key) |> BSV.PublicKey.compress()
     pkh = Crypto.hash160(pubkey.point)
     BSV.Base58.check_encode(pkh, 0x00)
   end
@@ -113,7 +119,8 @@ defmodule BSV.Tokens.Factory.Stas do
 
       tx =
         if change > 0 do
-          addr = change_address(funding.private_key)
+          sk = Payment.resolve_signing_key(funding)
+          addr = change_address_from_signing_key(sk)
           {:ok, change_script} = Address.to_script(addr)
           change_out = %Output{satoshis: change, locking_script: change_script, change: true}
           %{tx | outputs: tx.outputs ++ [change_out]}
@@ -125,14 +132,16 @@ defmodule BSV.Tokens.Factory.Stas do
     end
   end
 
-  defp sign_stas_input(tx, index, private_key) do
-    template = StasTemplate.unlock(private_key)
+  # Sign with a SigningKey (dispatches P2PKH vs P2MPKH).
+  defp sign_stas_input_sk(tx, index, signing_key) do
+    template = StasTemplate.unlock_from_signing_key(signing_key)
     StasTemplate.sign(template, tx, index)
   end
 
-  defp sign_p2pkh_input(tx, index, private_key) do
-    template = P2PKH.unlock(private_key)
-    P2PKH.sign(template, tx, index)
+  # Sign any input using the resolved signing key from a Payment.
+  defp sign_input_from_payment(tx, index, payment) do
+    sk = Payment.resolve_signing_key(payment)
+    sign_stas_input_sk(tx, index, sk)
   end
 
   defp set_unlocking_script(tx, index, script) do
@@ -173,8 +182,8 @@ defmodule BSV.Tokens.Factory.Stas do
             }
 
             with {:ok, tx} <- add_change_output(tx, config.funding, config.fee_rate),
-                 {:ok, sig0} <- sign_p2pkh_input(tx, 0, config.contract_utxo.private_key),
-                 {:ok, sig1} <- sign_p2pkh_input(tx, 1, config.funding.private_key) do
+                 {:ok, sig0} <- sign_input_from_payment(tx, 0, config.contract_utxo),
+                 {:ok, sig1} <- sign_input_from_payment(tx, 1, config.funding) do
               tx = tx |> set_unlocking_script(0, sig0) |> set_unlocking_script(1, sig1)
               {:ok, tx}
             end
@@ -204,8 +213,8 @@ defmodule BSV.Tokens.Factory.Stas do
         }
 
         with {:ok, tx} <- add_change_output(tx, config.funding, config.fee_rate),
-             {:ok, sig0} <- sign_stas_input(tx, 0, config.token_utxo.private_key),
-             {:ok, sig1} <- sign_p2pkh_input(tx, 1, config.funding.private_key) do
+             {:ok, sig0} <- sign_input_from_payment(tx, 0, config.token_utxo),
+             {:ok, sig1} <- sign_input_from_payment(tx, 1, config.funding) do
           tx = tx |> set_unlocking_script(0, sig0) |> set_unlocking_script(1, sig1)
           {:ok, tx}
         end
@@ -236,8 +245,8 @@ defmodule BSV.Tokens.Factory.Stas do
             }
 
             with {:ok, tx} <- add_change_output(tx, config.funding, config.fee_rate),
-                 {:ok, sig0} <- sign_stas_input(tx, 0, config.token_utxo.private_key),
-                 {:ok, sig1} <- sign_p2pkh_input(tx, 1, config.funding.private_key) do
+                 {:ok, sig0} <- sign_input_from_payment(tx, 0, config.token_utxo),
+                 {:ok, sig1} <- sign_input_from_payment(tx, 1, config.funding) do
               tx = tx |> set_unlocking_script(0, sig0) |> set_unlocking_script(1, sig1)
               {:ok, tx}
             end
@@ -282,14 +291,14 @@ defmodule BSV.Tokens.Factory.Stas do
                 Enum.reduce_while(0..(length(config.token_utxos) - 1), {:ok, tx}, fn i, {:ok, tx} ->
                   utxo = Enum.at(config.token_utxos, i)
 
-                  case sign_stas_input(tx, i, utxo.private_key) do
+                  case sign_input_from_payment(tx, i, utxo) do
                     {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
                     error -> {:halt, error}
                   end
                 end)
 
               with {:ok, tx} <- result,
-                   {:ok, fund_sig} <- sign_p2pkh_input(tx, funding_index, config.funding.private_key) do
+                   {:ok, fund_sig} <- sign_input_from_payment(tx, funding_index, config.funding) do
                 {:ok, set_unlocking_script(tx, funding_index, fund_sig)}
               end
             end
@@ -321,7 +330,7 @@ defmodule BSV.Tokens.Factory.Stas do
 
       tx =
         if change > 0 do
-          addr = change_address(config.funding.private_key)
+          addr = change_address_from_signing_key(Payment.resolve_signing_key(config.funding))
           {:ok, change_script} = Address.to_script(addr)
           change_out = %Output{satoshis: change, locking_script: change_script, change: true}
           %{tx | outputs: tx.outputs ++ [change_out]}
@@ -329,8 +338,8 @@ defmodule BSV.Tokens.Factory.Stas do
           tx
         end
 
-      with {:ok, sig0} <- sign_stas_input(tx, 0, config.token_utxo.private_key),
-           {:ok, sig1} <- sign_p2pkh_input(tx, 1, config.funding.private_key) do
+      with {:ok, sig0} <- sign_input_from_payment(tx, 0, config.token_utxo),
+           {:ok, sig1} <- sign_input_from_payment(tx, 1, config.funding) do
         tx = tx |> set_unlocking_script(0, sig0) |> set_unlocking_script(1, sig1)
         {:ok, tx}
       end
@@ -450,7 +459,8 @@ defmodule BSV.Tokens.Factory.Stas do
                   {:ok, tx},
                   fn i, {:ok, tx} ->
                     ti = Enum.at(config.token_inputs, i)
-                    template = StasTemplate.unlock(ti.private_key, spend_type: config.spend_type)
+                    sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
+                    template = StasTemplate.unlock_from_signing_key(sk, spend_type: config.spend_type)
 
                     case StasTemplate.sign(template, tx, i) do
                       {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}

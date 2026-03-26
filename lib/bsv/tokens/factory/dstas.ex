@@ -276,7 +276,8 @@ defmodule BSV.Tokens.Factory.Dstas do
                   {:ok, tx},
                   fn i, {:ok, tx} ->
                     ti = Enum.at(config.token_inputs, i)
-                    template = DstasTemplate.unlock(ti.private_key, config.spend_type)
+                    sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
+                    template = DstasTemplate.unlock_from_signing_key(sk, config.spend_type)
 
                     case DstasTemplate.sign(template, tx, i) do
                       {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
@@ -492,7 +493,8 @@ defmodule BSV.Tokens.Factory.Dstas do
                        config.fee_rate
                      ) do
                 # Sign token input with DSTAS template (spending type 1 = regular)
-                template = DstasTemplate.unlock(ti.private_key, :transfer)
+                sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
+                template = DstasTemplate.unlock_from_signing_key(sk, :transfer)
 
                 with {:ok, sig} <- DstasTemplate.sign(template, tx, 0) do
                   tx = set_unlocking_script(tx, 0, sig)
