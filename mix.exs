@@ -4,7 +4,7 @@ defmodule BSV.MixProject do
   def project do
     [
       app: :bsv_sdk,
-      version: "1.2.0",
+      version: "1.2.1",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -31,7 +31,7 @@ defmodule BSV.MixProject do
         "GitHub" => "https://github.com/Bittoku/bsv_sdk_elixir"
       },
       maintainers: ["Jerry David Chan"],
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE)
+      files: ~w(lib priv .formatter.exs mix.exs README.md LICENSE)
     ]
   end
 
