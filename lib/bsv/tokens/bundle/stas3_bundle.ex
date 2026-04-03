@@ -1,6 +1,6 @@
-defmodule BSV.Tokens.Bundle.DstasBundle do
+defmodule BSV.Tokens.Bundle.Stas3Bundle do
   @moduledoc """
-  DSTAS Bundle Factory — automatic merge/split/transfer transaction planning.
+  STAS3 Bundle Factory — automatic merge/split/transfer transaction planning.
 
   Given callback functions for UTXO retrieval, transaction lookup, and script
   construction, the factory automatically plans sequences of merge/split/transfer
@@ -25,7 +25,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
   - `get_stas_utxo_set` — `(min_satoshis) -> [utxo]` returns available STAS UTXOs
   - `get_funding_utxo` — `(request) -> utxo` returns a fee-paying UTXO
   - `get_transactions` — `([txid_hex]) -> %{txid_hex => Transaction.t()}` lookups
-  - `build_locking_params` — `(args) -> DstasOutputParams.t()` constructs output params
+  - `build_locking_params` — `(args) -> Stas3OutputParams.t()` constructs output params
   - `build_unlocking_script` — `(args) -> {:ok, Script.t()}` signs/unlocks inputs
 
   ## UTXO Map Structure
@@ -98,7 +98,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
           get_stas_utxo_set: (non_neg_integer() -> [utxo()]),
           get_funding_utxo: (funding_request() -> utxo()),
           get_transactions: ([String.t()] -> %{String.t() => Transaction.t()}),
-          build_locking_params: (locking_params_args() -> BSV.Tokens.DstasOutputParams.t()),
+          build_locking_params: (locking_params_args() -> BSV.Tokens.Stas3OutputParams.t()),
           build_unlocking_script: (unlocking_args() -> {:ok, Script.t()}),
           stas_wallet: map(),
           fee_wallet: map(),
@@ -526,7 +526,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
             end
 
           {tx_hex, tx} =
-            build_dstas_tx(bundle, %{
+            build_stas3_tx(bundle, %{
               stas_utxos: [utxo1, utxo2],
               fee_utxo: current_fee,
               destinations: merge_outputs,
@@ -556,7 +556,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
       ]
 
       {tx_hex, tx} =
-        build_dstas_tx(bundle, %{
+        build_stas3_tx(bundle, %{
           stas_utxos: [utxo],
           fee_utxo: current_fee,
           destinations: outputs,
@@ -646,7 +646,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
       end
 
     {tx_hex, tx} =
-      build_dstas_tx(bundle, %{
+      build_stas3_tx(bundle, %{
         stas_utxos: [current_stas],
         fee_utxo: current_fee,
         destinations: tx_outputs,
@@ -681,7 +681,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
 
   # ── Transaction Building ────────────────────────────────────────────────────
 
-  defp build_dstas_tx(bundle, params) do
+  defp build_stas3_tx(bundle, params) do
     %{
       stas_utxos: stas_utxos,
       fee_utxo: fee_utxo,
@@ -693,7 +693,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
 
     is_freeze_like = spend_type in [:freeze, :unfreeze]
 
-    # Map spend_type to the DstasSpendType used by base factory
+    # Map spend_type to the Stas3SpendType used by base factory
     _wire_spend_type = map_spend_type(spend_type)
 
     # Build STAS inputs
@@ -719,8 +719,8 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
       }
     }
 
-    # Build DSTAS outputs via the locking params callback
-    dstas_outputs =
+    # Build STAS3 outputs via the locking params callback
+    stas3_outputs =
       Enum.with_index(destinations)
       |> Enum.map(fn {dest, idx} ->
         # Use the first STAS input as the source for locking params
@@ -739,7 +739,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
 
         # Build the locking script from output params
         {:ok, script} =
-          BSV.Tokens.Script.DstasBuilder.build_dstas_locking_script(
+          BSV.Tokens.Script.Stas3Builder.build_stas3_locking_script(
             output_params.owner_pkh,
             output_params.redemption_pkh,
             output_params.action_data,
@@ -753,7 +753,7 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
       end)
 
     # Build fee change output
-    fee_output_idx = length(dstas_outputs)
+    fee_output_idx = length(stas3_outputs)
 
     # Note output (OP_RETURN) — only for final tx
     note_output =
@@ -768,9 +768,9 @@ defmodule BSV.Tokens.Bundle.DstasBundle do
     {:ok, fee_change_script} = BSV.Script.Address.to_script(fee_address)
     fee_change_output = %Output{satoshis: fee_utxo.satoshis, locking_script: fee_change_script, change: true}
 
-    # Assemble outputs: DSTAS outputs, fee change, then note
+    # Assemble outputs: STAS3 outputs, fee change, then note
     all_outputs =
-      dstas_outputs ++
+      stas3_outputs ++
         [fee_change_output] ++
         note_output
 

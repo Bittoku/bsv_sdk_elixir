@@ -47,7 +47,7 @@ defmodule BSV.MixProject do
         "Message": [BSV.Message.Encrypted, BSV.Message.Signed],
         "Auth": [BSV.Auth.Certificate, BSV.Auth.MasterCertificate, BSV.Auth.VerifiableCertificate, BSV.Auth.Nonce],
         "SPV": [BSV.SPV.MerklePath, BSV.SPV.Beef, BSV.SPV.MerkleTreeParent],
-        "Tokens": [BSV.Tokens, BSV.Tokens.Scheme, BSV.Tokens.TokenId, BSV.Tokens.Script.Reader, BSV.Tokens.Script.StasBuilder, BSV.Tokens.Script.StasBtgBuilder, BSV.Tokens.Script.DstasBuilder, BSV.Tokens.Factory.Contract, BSV.Tokens.Factory.Stas, BSV.Tokens.Factory.StasBtg, BSV.Tokens.Factory.Dstas, BSV.Tokens.Lineage, BSV.Tokens.Proof],
+        "Tokens": [BSV.Tokens, BSV.Tokens.Scheme, BSV.Tokens.TokenId, BSV.Tokens.Script.Reader, BSV.Tokens.Script.StasBuilder, BSV.Tokens.Script.StasBtgBuilder, BSV.Tokens.Script.Stas3Builder, BSV.Tokens.Factory.Contract, BSV.Tokens.Factory.Stas, BSV.Tokens.Factory.StasBtg, BSV.Tokens.Factory.Stas3, BSV.Tokens.Lineage, BSV.Tokens.Proof],
         "Transports": [BSV.ARC.Client, BSV.ARC.Config, BSV.JungleBus.Client, BSV.JungleBus.Config]
       ]
     ]

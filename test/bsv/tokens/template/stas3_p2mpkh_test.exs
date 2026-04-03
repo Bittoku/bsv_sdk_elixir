@@ -1,10 +1,10 @@
-defmodule BSV.Tokens.Template.DstasP2MPKHTest do
+defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
   use ExUnit.Case, async: true
 
   alias BSV.{Script, PrivateKey, PublicKey, Crypto}
   alias BSV.Transaction
   alias BSV.Transaction.{Input, Output, P2MPKH}
-  alias BSV.Tokens.Template.Dstas, as: DstasTemplate
+  alias BSV.Tokens.Template.Stas3, as: Stas3Template
   alias BSV.Tokens.SigningKey
 
   # -- Helpers --
@@ -48,12 +48,12 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
   # -- unlock_mpkh tests --
 
   describe "unlock_mpkh/4" do
-    test "creates a %Dstas{} struct with multi signing key and spend_type" do
+    test "creates a %Stas3{} struct with multi signing key and spend_type" do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
-      template = DstasTemplate.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
+      template = Stas3Template.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
 
-      assert %DstasTemplate{} = template
+      assert %Stas3Template{} = template
       assert {:multi, keys, multisig} = template.signing_key
       assert length(keys) == 2
       assert multisig.threshold == 2
@@ -67,7 +67,7 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
 
       template =
-        DstasTemplate.unlock_mpkh(Enum.take(privs, 1), ms, :freeze_unfreeze,
+        Stas3Template.unlock_mpkh(Enum.take(privs, 1), ms, :freeze_unfreeze,
           sighash_flag: 0x01
         )
 
@@ -83,9 +83,9 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
       sk = SigningKey.multi(Enum.take(privs, 2), ms)
-      template = DstasTemplate.unlock_from_signing_key(sk, :transfer)
+      template = Stas3Template.unlock_from_signing_key(sk, :transfer)
 
-      assert %DstasTemplate{} = template
+      assert %Stas3Template{} = template
       assert {:multi, _, _} = template.signing_key
       assert template.spend_type == :transfer
     end
@@ -98,12 +98,12 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
       signing_keys = Enum.take(privs, 2)
-      template = DstasTemplate.unlock_mpkh(signing_keys, ms, :transfer)
+      template = Stas3Template.unlock_mpkh(signing_keys, ms, :transfer)
 
       locking = make_p2pkh_locking_script()
       tx = mock_tx_with_source(locking, 5000)
 
-      assert {:ok, %Script{chunks: chunks}} = DstasTemplate.sign(template, tx, 0)
+      assert {:ok, %Script{chunks: chunks}} = Stas3Template.sign(template, tx, 0)
 
       # 2 sigs + 1 multisig script = 3
       assert length(chunks) == 3
@@ -125,12 +125,12 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
     test "produces script with 1 signature chunk for 1-of-1" do
       {privs, pubs} = gen_keys(1)
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
-      template = DstasTemplate.unlock_mpkh(privs, ms, :transfer)
+      template = Stas3Template.unlock_mpkh(privs, ms, :transfer)
 
       locking = make_p2pkh_locking_script()
       tx = mock_tx_with_source(locking, 1000)
 
-      assert {:ok, %Script{chunks: chunks}} = DstasTemplate.sign(template, tx, 0)
+      assert {:ok, %Script{chunks: chunks}} = Stas3Template.sign(template, tx, 0)
       assert length(chunks) == 2
 
       assert {:data, sig_bytes} = hd(chunks)
@@ -145,12 +145,12 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
       signing_keys = Enum.take(privs, 2)
-      template = DstasTemplate.unlock_mpkh(signing_keys, ms, :transfer)
+      template = Stas3Template.unlock_mpkh(signing_keys, ms, :transfer)
 
       locking = make_p2pkh_locking_script()
       tx = mock_tx_with_source(locking, 5000)
 
-      {:ok, %Script{chunks: chunks}} = DstasTemplate.sign(template, tx, 0)
+      {:ok, %Script{chunks: chunks}} = Stas3Template.sign(template, tx, 0)
       [{:data, sig1}, {:data, sig2} | _] = chunks
       assert sig1 != sig2
     end
@@ -158,7 +158,7 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
     test "returns error when source_output is missing" do
       {privs, pubs} = gen_keys(2)
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
-      template = DstasTemplate.unlock_mpkh(Enum.take(privs, 1), ms, :transfer)
+      template = Stas3Template.unlock_mpkh(Enum.take(privs, 1), ms, :transfer)
 
       tx = %Transaction{
         inputs: [
@@ -171,7 +171,7 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
         outputs: []
       }
 
-      assert {:error, :missing_source_output} = DstasTemplate.sign(template, tx, 0)
+      assert {:error, :missing_source_output} = Stas3Template.sign(template, tx, 0)
     end
   end
 
@@ -181,40 +181,40 @@ defmodule BSV.Tokens.Template.DstasP2MPKHTest do
     test "2-of-3: m*73 + (3 + n*34 + 3)" do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
-      template = DstasTemplate.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
+      template = Stas3Template.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
 
       expected = 2 * 73 + (3 + 3 * 34 + 3)
-      assert DstasTemplate.estimate_length(template, nil, nil) == expected
+      assert Stas3Template.estimate_length(template, nil, nil) == expected
     end
 
     test "1-of-1: m*73 + (3 + n*34 + 3)" do
       {privs, pubs} = gen_keys(1)
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
-      template = DstasTemplate.unlock_mpkh(privs, ms, :transfer)
+      template = Stas3Template.unlock_mpkh(privs, ms, :transfer)
 
       expected = 1 * 73 + (3 + 1 * 34 + 3)
-      assert DstasTemplate.estimate_length(template, nil, nil) == expected
+      assert Stas3Template.estimate_length(template, nil, nil) == expected
     end
 
     test "3-of-5: m*73 + (3 + n*34 + 3)" do
       {privs, pubs} = gen_keys(5)
       {:ok, ms} = P2MPKH.new_multisig(3, pubs)
-      template = DstasTemplate.unlock_mpkh(Enum.take(privs, 3), ms, :transfer)
+      template = Stas3Template.unlock_mpkh(Enum.take(privs, 3), ms, :transfer)
 
       expected = 3 * 73 + (3 + 5 * 34 + 3)
-      assert DstasTemplate.estimate_length(template, nil, nil) == expected
+      assert Stas3Template.estimate_length(template, nil, nil) == expected
     end
 
     test "multi estimate exceeds single P2PKH estimate" do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
-      multi_template = DstasTemplate.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
+      multi_template = Stas3Template.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
 
       single_key = PrivateKey.generate()
-      single_template = DstasTemplate.unlock(single_key, :transfer)
+      single_template = Stas3Template.unlock(single_key, :transfer)
 
-      assert DstasTemplate.estimate_length(multi_template, nil, nil) >
-               DstasTemplate.estimate_length(single_template, nil, nil)
+      assert Stas3Template.estimate_length(multi_template, nil, nil) >
+               Stas3Template.estimate_length(single_template, nil, nil)
     end
   end
 end

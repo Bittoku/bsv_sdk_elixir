@@ -45,7 +45,7 @@ defmodule BSV.Tokens.Destination do
   defstruct [:address, :satoshis]
 end
 
-defmodule BSV.Tokens.DstasSpendType do
+defmodule BSV.Tokens.Stas3SpendType do
   @moduledoc """
   STAS 3.0 spending operation type.
 
@@ -86,32 +86,32 @@ defmodule BSV.Tokens.ActionData do
           | {:custom, binary()}
 end
 
-defmodule BSV.Tokens.DstasLockingParams do
+defmodule BSV.Tokens.Stas3LockingParams do
   @moduledoc "Parameters for constructing a STAS 3.0 locking script."
 
   @type t :: %__MODULE__{
           address: String.t(),
-          spend_type: BSV.Tokens.DstasSpendType.t(),
+          spend_type: BSV.Tokens.Stas3SpendType.t(),
           action_data: BSV.Tokens.ActionData.t() | nil
         }
 
   defstruct [:address, :spend_type, action_data: nil]
 end
 
-defmodule BSV.Tokens.DstasDestination do
+defmodule BSV.Tokens.Stas3Destination do
   @moduledoc "A destination specific to STAS 3.0 token operations."
 
   @type t :: %__MODULE__{
           address: String.t(),
           satoshis: non_neg_integer(),
-          spend_type: BSV.Tokens.DstasSpendType.t(),
+          spend_type: BSV.Tokens.Stas3SpendType.t(),
           action_data: BSV.Tokens.ActionData.t() | nil
         }
 
   defstruct [:address, :satoshis, :spend_type, action_data: nil]
 end
 
-defmodule BSV.Tokens.DstasOutputParams do
+defmodule BSV.Tokens.Stas3OutputParams do
   @moduledoc """
   Parameters for a STAS 3.0 output in spend operations.
 

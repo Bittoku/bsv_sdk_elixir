@@ -14,10 +14,10 @@ defmodule BSV.Tokens do
   - `BSV.Tokens.ScriptType` — Script type classification
   - `BSV.Tokens.Script.Reader` — Script parsing
   - `BSV.Tokens.Script.StasBuilder` — STAS script builder
-  - `BSV.Tokens.Script.DstasBuilder` — dSTAS script builder
+  - `BSV.Tokens.Script.Stas3Builder` — dSTAS script builder
   - `BSV.Tokens.Factory.Contract` — Contract transaction builder
   - `BSV.Tokens.Factory.Stas` — STAS transaction factories
-  - `BSV.Tokens.Factory.Dstas` — dSTAS transaction factories
+  - `BSV.Tokens.Factory.Stas3` — dSTAS transaction factories
   """
 
   defdelegate read_locking_script(script), to: BSV.Tokens.Script.Reader

@@ -3,7 +3,7 @@ defmodule BSV.Tokens.Script.ReaderTest do
 
   alias BSV.Tokens.Script.Reader
   alias BSV.Tokens.Script.StasBuilder
-  alias BSV.Tokens.Script.DstasBuilder
+  alias BSV.Tokens.Script.Stas3Builder
 
   defp build_stas_script(owner, redemption, splittable) do
     {:ok, script} = StasBuilder.build_stas_locking_script(owner, redemption, splittable)
@@ -101,27 +101,27 @@ defmodule BSV.Tokens.Script.ReaderTest do
     end
   end
 
-  test "classify DSTAS unfrozen" do
+  test "classify STAS3 unfrozen" do
     owner = :binary.copy(<<0xAA>>, 20)
     redemption = :binary.copy(<<0xBB>>, 20)
-    {:ok, script} = DstasBuilder.build_dstas_locking_script(owner, redemption, nil, false, true, [], [])
+    {:ok, script} = Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, true, [], [])
     script_bin = BSV.Script.to_binary(script)
 
     parsed = Reader.read_locking_script(script_bin)
-    assert parsed.script_type == :dstas
-    assert parsed.dstas.owner == owner
-    assert parsed.dstas.redemption == redemption
-    assert parsed.dstas.frozen == false
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.owner == owner
+    assert parsed.stas3.redemption == redemption
+    assert parsed.stas3.frozen == false
   end
 
-  test "classify DSTAS frozen" do
+  test "classify STAS3 frozen" do
     owner = :binary.copy(<<0xCC>>, 20)
     redemption = :binary.copy(<<0xDD>>, 20)
-    {:ok, script} = DstasBuilder.build_dstas_locking_script(owner, redemption, nil, true, true, [], [])
+    {:ok, script} = Stas3Builder.build_stas3_locking_script(owner, redemption, nil, true, true, [], [])
     script_bin = BSV.Script.to_binary(script)
 
     parsed = Reader.read_locking_script(script_bin)
-    assert parsed.script_type == :dstas
-    assert parsed.dstas.frozen == true
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.frozen == true
   end
 end

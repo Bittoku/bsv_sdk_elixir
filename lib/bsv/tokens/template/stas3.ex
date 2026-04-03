@@ -1,6 +1,6 @@
-defmodule BSV.Tokens.Template.Dstas do
+defmodule BSV.Tokens.Template.Stas3 do
   @moduledoc """
-  DSTAS unlocking script templates (P2PKH and P2MPKH).
+  STAS3 unlocking script templates (P2PKH and P2MPKH).
 
   Identical to STAS templates but carries `spend_type` for future preimage encoding.
   """
@@ -15,12 +15,12 @@ defmodule BSV.Tokens.Template.Dstas do
 
   @type t :: %__MODULE__{
           signing_key: SigningKey.t(),
-          spend_type: BSV.Tokens.DstasSpendType.t(),
+          spend_type: BSV.Tokens.Stas3SpendType.t(),
           sighash_flag: non_neg_integer()
         }
 
-  @doc "Create a DSTAS unlocker from a private key (P2PKH, backward compatible)."
-  @spec unlock(PrivateKey.t(), BSV.Tokens.DstasSpendType.t(), keyword()) :: t()
+  @doc "Create a STAS3 unlocker from a private key (P2PKH, backward compatible)."
+  @spec unlock(PrivateKey.t(), BSV.Tokens.Stas3SpendType.t(), keyword()) :: t()
   def unlock(%PrivateKey{} = key, spend_type, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
 
@@ -31,8 +31,8 @@ defmodule BSV.Tokens.Template.Dstas do
     }
   end
 
-  @doc "Create a DSTAS P2MPKH unlocker."
-  @spec unlock_mpkh([PrivateKey.t()], P2MPKH.multisig_script(), BSV.Tokens.DstasSpendType.t(), keyword()) ::
+  @doc "Create a STAS3 P2MPKH unlocker."
+  @spec unlock_mpkh([PrivateKey.t()], P2MPKH.multisig_script(), BSV.Tokens.Stas3SpendType.t(), keyword()) ::
           t()
   def unlock_mpkh(private_keys, multisig, spend_type, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
@@ -44,8 +44,8 @@ defmodule BSV.Tokens.Template.Dstas do
     }
   end
 
-  @doc "Create a DSTAS unlocker from a `SigningKey`."
-  @spec unlock_from_signing_key(SigningKey.t(), BSV.Tokens.DstasSpendType.t(), keyword()) :: t()
+  @doc "Create a STAS3 unlocker from a `SigningKey`."
+  @spec unlock_from_signing_key(SigningKey.t(), BSV.Tokens.Stas3SpendType.t(), keyword()) :: t()
   def unlock_from_signing_key(signing_key, spend_type, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
 
@@ -56,7 +56,7 @@ defmodule BSV.Tokens.Template.Dstas do
     }
   end
 
-  @doc "Sign a DSTAS input, producing a P2PKH or P2MPKH unlocking script."
+  @doc "Sign a STAS3 input, producing a P2PKH or P2MPKH unlocking script."
   @impl BSV.Transaction.Template
   def sign(%__MODULE__{signing_key: sk, sighash_flag: flag}, tx, input_index) do
     input = Enum.at(tx.inputs, input_index)

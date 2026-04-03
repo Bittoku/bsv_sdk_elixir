@@ -1,6 +1,6 @@
-defmodule BSV.Tokens.Factory.Dstas do
+defmodule BSV.Tokens.Factory.Stas3 do
   @moduledoc """
-  DSTAS transaction factories.
+  STAS3 transaction factories.
 
   Pure functions that build complete, signed transactions for dSTAS token
   operations: two-tx issuance, base spend, freeze, unfreeze, and swap.
@@ -11,8 +11,8 @@ defmodule BSV.Tokens.Factory.Dstas do
   alias BSV.Transaction.{Input, Output, P2PKH}
   alias BSV.Script.Address
   alias BSV.Tokens.Error
-  alias BSV.Tokens.Script.DstasBuilder
-  alias BSV.Tokens.Template.Dstas, as: DstasTemplate
+  alias BSV.Tokens.Script.Stas3Builder
+  alias BSV.Tokens.Template.Stas3, as: Stas3Template
 
   # ---- Config types ----
 
@@ -34,8 +34,8 @@ defmodule BSV.Tokens.Factory.Dstas do
           fee_satoshis: non_neg_integer(),
           fee_locking_script: Script.t(),
           fee_private_key: PrivateKey.t(),
-          destinations: [BSV.Tokens.DstasOutputParams.t()],
-          spend_type: BSV.Tokens.DstasSpendType.t(),
+          destinations: [BSV.Tokens.Stas3OutputParams.t()],
+          spend_type: BSV.Tokens.Stas3SpendType.t(),
           fee_rate: non_neg_integer()
         }
 
@@ -97,12 +97,12 @@ defmodule BSV.Tokens.Factory.Dstas do
 
   # ---- Factory functions ----
 
-  @doc "Build the two-transaction DSTAS issuance flow."
-  @spec build_dstas_issue_txs(issue_config()) ::
+  @doc "Build the two-transaction STAS3 issuance flow."
+  @spec build_stas3_issue_txs(issue_config()) ::
           {:ok, %{contract_tx: Transaction.t(), issue_tx: Transaction.t()}} | {:error, term()}
-  def build_dstas_issue_txs(config) do
+  def build_stas3_issue_txs(config) do
     if config.outputs == [] do
-      {:error, Error.invalid_destination("at least one output required for DSTAS issuance")}
+      {:error, Error.invalid_destination("at least one output required for STAS3 issuance")}
     else
       total_tokens = Enum.sum(Enum.map(config.outputs, & &1.satoshis))
 
@@ -181,8 +181,8 @@ defmodule BSV.Tokens.Factory.Dstas do
 
               redemption_pkh = issuer_pkh
 
-              # Build DSTAS token outputs
-              with {:ok, token_outputs} <- build_dstas_outputs(config.outputs, redemption_pkh) do
+              # Build STAS3 token outputs
+              with {:ok, token_outputs} <- build_stas3_outputs(config.outputs, redemption_pkh) do
                 issue_tx = %Transaction{inputs: issue_inputs, outputs: token_outputs}
 
                 # Fee change for issue TX
@@ -231,15 +231,15 @@ defmodule BSV.Tokens.Factory.Dstas do
     end
   end
 
-  @doc "Build a generic DSTAS spend transaction."
-  @spec build_dstas_base_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_base_tx(config) do
+  @doc "Build a generic STAS3 spend transaction."
+  @spec build_stas3_base_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_base_tx(config) do
     cond do
       config.destinations == [] ->
         {:error, Error.invalid_destination("at least one destination required")}
 
       config.token_inputs == [] or length(config.token_inputs) > 2 ->
-        {:error, Error.invalid_destination("DSTAS base tx requires 1 or 2 token inputs")}
+        {:error, Error.invalid_destination("STAS3 base tx requires 1 or 2 token inputs")}
 
       true ->
         total_in = Enum.sum(Enum.map(config.token_inputs, & &1.satoshis))
@@ -261,15 +261,15 @@ defmodule BSV.Tokens.Factory.Dstas do
               config.fee_locking_script
             )
 
-          with {:ok, dstas_outputs} <- build_dstas_dest_outputs(config.destinations) do
+          with {:ok, stas3_outputs} <- build_stas3_dest_outputs(config.destinations) do
             tx = %Transaction{
               inputs: token_inputs ++ [fee_input],
-              outputs: dstas_outputs
+              outputs: stas3_outputs
             }
 
             with {:ok, tx} <-
                    add_fee_change(tx, config.fee_satoshis, config.fee_private_key, config.fee_rate) do
-              # Sign token inputs with DSTAS template
+              # Sign token inputs with STAS3 template
               result =
                 Enum.reduce_while(
                   0..(length(config.token_inputs) - 1),
@@ -277,9 +277,9 @@ defmodule BSV.Tokens.Factory.Dstas do
                   fn i, {:ok, tx} ->
                     ti = Enum.at(config.token_inputs, i)
                     sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
-                    template = DstasTemplate.unlock_from_signing_key(sk, config.spend_type)
+                    template = Stas3Template.unlock_from_signing_key(sk, config.spend_type)
 
-                    case DstasTemplate.sign(template, tx, i) do
+                    case Stas3Template.sign(template, tx, i) do
                       {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
                       error -> {:halt, error}
                     end
@@ -302,24 +302,24 @@ defmodule BSV.Tokens.Factory.Dstas do
     end
   end
 
-  @doc "Build a DSTAS freeze transaction."
-  @spec build_dstas_freeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_freeze_tx(config) do
+  @doc "Build a STAS3 freeze transaction."
+  @spec build_stas3_freeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_freeze_tx(config) do
     frozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: true} end)
 
-    build_dstas_base_tx(%{
+    build_stas3_base_tx(%{
       config
       | spend_type: :freeze_unfreeze,
         destinations: frozen_dests
     })
   end
 
-  @doc "Build a DSTAS unfreeze transaction."
-  @spec build_dstas_unfreeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_unfreeze_tx(config) do
+  @doc "Build a STAS3 unfreeze transaction."
+  @spec build_stas3_unfreeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_unfreeze_tx(config) do
     unfrozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: false} end)
 
-    build_dstas_base_tx(%{
+    build_stas3_base_tx(%{
       config
       | spend_type: :freeze_unfreeze,
         destinations: unfrozen_dests
@@ -327,24 +327,24 @@ defmodule BSV.Tokens.Factory.Dstas do
   end
 
   @doc """
-  Build a DSTAS split transaction.
+  Build a STAS3 split transaction.
 
   Splits a single STAS input into 1-4 STAS outputs. This is a semantic wrapper
-  around `build_dstas_base_tx/1` that enforces split-specific constraints:
+  around `build_stas3_base_tx/1` that enforces split-specific constraints:
   exactly 1 STAS input and 1-4 destinations.
 
   ## Parameters
     * `config` - A `base_config()` map with:
       * `:token_inputs` - Exactly 1 token input
-      * `:destinations` - 1-4 DSTAS output destinations
+      * `:destinations` - 1-4 STAS3 output destinations
       * Other fields as per `base_config()`
 
   ## Returns
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure
   """
-  @spec build_dstas_split_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_split_tx(config) do
+  @spec build_stas3_split_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_split_tx(config) do
     cond do
       length(config.token_inputs) != 1 ->
         {:error, Error.invalid_destination("split requires exactly 1 STAS input")}
@@ -353,28 +353,28 @@ defmodule BSV.Tokens.Factory.Dstas do
         {:error, Error.invalid_destination("split requires 1-4 destinations")}
 
       true ->
-        build_dstas_base_tx(%{config | spend_type: :transfer})
+        build_stas3_base_tx(%{config | spend_type: :transfer})
     end
   end
 
   @doc """
-  Build a DSTAS merge transaction.
+  Build a STAS3 merge transaction.
 
   Merges exactly 2 STAS inputs into 1-2 STAS outputs. This is a semantic wrapper
-  around `build_dstas_base_tx/1` that enforces merge-specific constraints.
+  around `build_stas3_base_tx/1` that enforces merge-specific constraints.
 
   ## Parameters
     * `config` - A `base_config()` map with:
       * `:token_inputs` - Exactly 2 token inputs
-      * `:destinations` - 1-2 DSTAS output destinations
+      * `:destinations` - 1-2 STAS3 output destinations
       * Other fields as per `base_config()`
 
   ## Returns
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure
   """
-  @spec build_dstas_merge_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_merge_tx(config) do
+  @spec build_stas3_merge_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_merge_tx(config) do
     cond do
       length(config.token_inputs) != 2 ->
         {:error, Error.invalid_destination("merge requires exactly 2 STAS inputs")}
@@ -383,12 +383,12 @@ defmodule BSV.Tokens.Factory.Dstas do
         {:error, Error.invalid_destination("merge requires 1-2 destinations")}
 
       true ->
-        build_dstas_base_tx(%{config | spend_type: :transfer})
+        build_stas3_base_tx(%{config | spend_type: :transfer})
     end
   end
 
   @doc """
-  Build a DSTAS confiscation transaction.
+  Build a STAS3 confiscation transaction.
 
   Confiscates token UTXOs using spending type 3 (confiscation authority path).
   Frozen inputs CAN be confiscated. The scheme must have confiscation enabled
@@ -402,17 +402,17 @@ defmodule BSV.Tokens.Factory.Dstas do
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure
   """
-  @spec build_dstas_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_confiscate_tx(config) do
-    build_dstas_base_tx(%{config | spend_type: :confiscation})
+  @spec build_stas3_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_confiscate_tx(config) do
+    build_stas3_base_tx(%{config | spend_type: :confiscation})
   end
 
   @doc """
-  Build a DSTAS redeem transaction.
+  Build a STAS3 redeem transaction.
 
   Redeems STAS tokens back to regular P2PKH satoshis. Only the issuer can redeem.
-  This is NOT a wrapper around `build_dstas_base_tx/1` because the primary output
-  is P2PKH rather than DSTAS.
+  This is NOT a wrapper around `build_stas3_base_tx/1` because the primary output
+  is P2PKH rather than STAS3.
 
   ## Parameters
     * `config` - A map with:
@@ -421,7 +421,7 @@ defmodule BSV.Tokens.Factory.Dstas do
         `:fee_private_key` - Funding input for fees
       * `:redeem_satoshis` - Amount to redeem as P2PKH output
       * `:redeem_pkh` - The 20-byte pubkey hash for the P2PKH redeem output
-      * `:remaining_destinations` - Optional list of `DstasOutputParams` for
+      * `:remaining_destinations` - Optional list of `Stas3OutputParams` for
         remaining STAS outputs (default `[]`)
       * `:fee_rate` - Fee rate in sat/KB
 
@@ -435,8 +435,8 @@ defmodule BSV.Tokens.Factory.Dstas do
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure
   """
-  @spec build_dstas_redeem_tx(map()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_redeem_tx(config) do
+  @spec build_stas3_redeem_tx(map()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_redeem_tx(config) do
     ti = config.token_input
     remaining = Map.get(config, :remaining_destinations, [])
 
@@ -444,13 +444,13 @@ defmodule BSV.Tokens.Factory.Dstas do
     parsed = BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
 
     cond do
-      parsed.script_type != :dstas ->
-        {:error, Error.invalid_script("token input is not a valid DSTAS script")}
+      parsed.script_type != :stas3 ->
+        {:error, Error.invalid_script("token input is not a valid STAS3 script")}
 
-      parsed.dstas.frozen ->
+      parsed.stas3.frozen ->
         {:error, Error.invalid_destination("frozen inputs cannot be redeemed")}
 
-      parsed.dstas.owner != parsed.dstas.redemption ->
+      parsed.stas3.owner != parsed.stas3.redemption ->
         {:error,
          Error.invalid_destination("only the issuer can redeem (owner must match redemption PKH)")}
 
@@ -467,8 +467,8 @@ defmodule BSV.Tokens.Factory.Dstas do
           with {:ok, redeem_script} <- Address.to_script(redeem_address) do
             redeem_output = %Output{satoshis: config.redeem_satoshis, locking_script: redeem_script}
 
-            # Build optional remaining DSTAS outputs
-            with {:ok, dstas_outputs} <- build_dstas_dest_outputs(remaining) do
+            # Build optional remaining STAS3 outputs
+            with {:ok, stas3_outputs} <- build_stas3_dest_outputs(remaining) do
               token_input =
                 make_input(ti.txid, ti.vout, ti.satoshis, ti.locking_script)
 
@@ -482,7 +482,7 @@ defmodule BSV.Tokens.Factory.Dstas do
 
               tx = %Transaction{
                 inputs: [token_input, fee_input],
-                outputs: [redeem_output | dstas_outputs]
+                outputs: [redeem_output | stas3_outputs]
               }
 
               with {:ok, tx} <-
@@ -492,11 +492,11 @@ defmodule BSV.Tokens.Factory.Dstas do
                        config.fee_private_key,
                        config.fee_rate
                      ) do
-                # Sign token input with DSTAS template (spending type 1 = regular)
+                # Sign token input with STAS3 template (spending type 1 = regular)
                 sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
-                template = DstasTemplate.unlock_from_signing_key(sk, :transfer)
+                template = Stas3Template.unlock_from_signing_key(sk, :transfer)
 
-                with {:ok, sig} <- DstasTemplate.sign(template, tx, 0) do
+                with {:ok, sig} <- Stas3Template.sign(template, tx, 0) do
                   tx = set_unlocking_script(tx, 0, sig)
 
                   # Sign fee input with P2PKH
@@ -515,7 +515,7 @@ defmodule BSV.Tokens.Factory.Dstas do
   end
 
   @doc """
-  Build a DSTAS transfer-swap transaction.
+  Build a STAS3 transfer-swap transaction.
 
   One side transfers (spending type 1), the other side's swap request is consumed.
   Requires exactly 2 STAS inputs. Rejects frozen inputs.
@@ -532,16 +532,16 @@ defmodule BSV.Tokens.Factory.Dstas do
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure (wrong input count, frozen inputs)
   """
-  @spec build_dstas_transfer_swap_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_transfer_swap_tx(config) do
+  @spec build_stas3_transfer_swap_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_transfer_swap_tx(config) do
     with :ok <- validate_swap_inputs(config.token_inputs),
          :ok <- validate_swap_destinations(config.destinations) do
-      build_dstas_base_tx(%{config | spend_type: :transfer})
+      build_stas3_base_tx(%{config | spend_type: :transfer})
     end
   end
 
   @doc """
-  Build a DSTAS swap-swap transaction.
+  Build a STAS3 swap-swap transaction.
 
   Both sides are swap requests (spending type 4). Requires exactly 2 STAS inputs,
   both carrying swap action data. Rejects frozen inputs.
@@ -558,16 +558,16 @@ defmodule BSV.Tokens.Factory.Dstas do
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure (wrong input count, frozen inputs)
   """
-  @spec build_dstas_swap_swap_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_swap_swap_tx(config) do
+  @spec build_stas3_swap_swap_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_swap_swap_tx(config) do
     with :ok <- validate_swap_inputs(config.token_inputs),
          :ok <- validate_swap_destinations(config.destinations) do
-      build_dstas_base_tx(%{config | spend_type: :swap_cancellation})
+      build_stas3_base_tx(%{config | spend_type: :swap_cancellation})
     end
   end
 
   @doc """
-  Build a DSTAS swap flow transaction with auto-detected mode.
+  Build a STAS3 swap flow transaction with auto-detected mode.
 
   Reads each input's locking script to detect swap action data:
   - Both inputs have swap action data → swap-swap (spending type 4)
@@ -580,14 +580,14 @@ defmodule BSV.Tokens.Factory.Dstas do
     * `{:ok, transaction}` on success
     * `{:error, reason}` on validation failure
   """
-  @spec build_dstas_swap_flow_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
-  def build_dstas_swap_flow_tx(config) do
+  @spec build_stas3_swap_flow_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_swap_flow_tx(config) do
     if length(config.token_inputs) != 2 do
       {:error, Error.invalid_destination("swap flow requires exactly 2 token inputs")}
     else
-      case resolve_dstas_swap_mode(config.token_inputs) do
-        :swap_swap -> build_dstas_swap_swap_tx(config)
-        :transfer_swap -> build_dstas_transfer_swap_tx(config)
+      case resolve_stas3_swap_mode(config.token_inputs) do
+        :swap_swap -> build_stas3_swap_swap_tx(config)
+        :transfer_swap -> build_stas3_transfer_swap_tx(config)
       end
     end
   end
@@ -605,16 +605,16 @@ defmodule BSV.Tokens.Factory.Dstas do
   ## Returns
     * `:swap_swap` or `:transfer_swap`
   """
-  @spec resolve_dstas_swap_mode([BSV.Tokens.TokenInput.t()]) :: :swap_swap | :transfer_swap
-  def resolve_dstas_swap_mode(token_inputs) when length(token_inputs) == 2 do
+  @spec resolve_stas3_swap_mode([BSV.Tokens.TokenInput.t()]) :: :swap_swap | :transfer_swap
+  def resolve_stas3_swap_mode(token_inputs) when length(token_inputs) == 2 do
     swap_count =
       Enum.count(token_inputs, fn ti ->
         parsed =
           BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
 
-        parsed.script_type == :dstas and
-          parsed.dstas != nil and
-          match?({:swap, %{}}, parsed.dstas.action_data_parsed)
+        parsed.script_type == :stas3 and
+          parsed.stas3 != nil and
+          match?({:swap, %{}}, parsed.stas3.action_data_parsed)
       end)
 
     if swap_count == 2, do: :swap_swap, else: :transfer_swap
@@ -622,9 +622,9 @@ defmodule BSV.Tokens.Factory.Dstas do
 
   # ---- Private helpers ----
 
-  defp build_dstas_outputs(outputs, redemption_pkh) do
+  defp build_stas3_outputs(outputs, redemption_pkh) do
     Enum.reduce_while(outputs, {:ok, []}, fn out, {:ok, acc} ->
-      case DstasBuilder.build_dstas_locking_script(
+      case Stas3Builder.build_stas3_locking_script(
              out.owner_pkh,
              redemption_pkh,
              nil,
@@ -643,9 +643,9 @@ defmodule BSV.Tokens.Factory.Dstas do
     end)
   end
 
-  defp build_dstas_dest_outputs(destinations) do
+  defp build_stas3_dest_outputs(destinations) do
     Enum.reduce_while(destinations, {:ok, []}, fn dest, {:ok, acc} ->
-      case DstasBuilder.build_dstas_locking_script(
+      case Stas3Builder.build_stas3_locking_script(
              dest.owner_pkh,
              dest.redemption_pkh,
              dest.action_data,
@@ -676,7 +676,7 @@ defmodule BSV.Tokens.Factory.Dstas do
             parsed =
               BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
 
-            parsed.script_type == :dstas and parsed.dstas != nil and parsed.dstas.frozen
+            parsed.script_type == :stas3 and parsed.stas3 != nil and parsed.stas3.frozen
           end)
 
         if frozen do

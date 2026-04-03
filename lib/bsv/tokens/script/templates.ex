@@ -23,9 +23,9 @@ defmodule BSV.Tokens.Script.Templates do
   def stas_v2_min_len, do: 1432
 
   @doc "STAS 3.0 base template prefix bytes."
-  def dstas_base_prefix, do: <<0x6D, 0x82, 0x73, 0x63>>
+  def stas3_base_prefix, do: <<0x6D, 0x82, 0x73, 0x63>>
   @doc "Length of the STAS 3.0 base template in bytes."
-  def dstas_base_template_len, do: 2812
+  def stas3_base_template_len, do: 2812
 
   @doc "Standard P2PKH script length in bytes."
   def p2pkh_len, do: 25

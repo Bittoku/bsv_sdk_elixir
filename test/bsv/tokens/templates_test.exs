@@ -21,9 +21,9 @@ defmodule BSV.Tokens.Script.TemplatesTest do
     assert Templates.stas_v2_min_len() == 1432
   end
 
-  test "dstas constants" do
-    assert Templates.dstas_base_prefix() == <<0x6D, 0x82, 0x73, 0x63>>
-    assert Templates.dstas_base_template_len() == 2812
+  test "stas3 constants" do
+    assert Templates.stas3_base_prefix() == <<0x6D, 0x82, 0x73, 0x63>>
+    assert Templates.stas3_base_template_len() == 2812
   end
 
   test "p2pkh constants" do

@@ -24,7 +24,7 @@ defmodule BSV.Tokens.Factory.Stas do
   alias BSV.Script.Address
   alias BSV.Tokens.{Error, Payment, SigningKey}
   alias BSV.Tokens.Script.StasBuilder
-  alias BSV.Tokens.Script.DstasBuilder
+  alias BSV.Tokens.Script.Stas3Builder
   alias BSV.Tokens.Template.Stas, as: StasTemplate
   alias BSV.Tokens.ScriptFlags
 
@@ -368,7 +368,7 @@ defmodule BSV.Tokens.Factory.Stas do
   @typedoc """
   Output parameters for v3 STAS operations.
 
-  Same structure as `DstasOutputParams` — these are protocol-level fields, not
+  Same structure as `Stas3OutputParams` — these are protocol-level fields, not
   STAS 3.0-specific.
   """
   @type v3_output_params :: %{
@@ -596,7 +596,7 @@ defmodule BSV.Tokens.Factory.Stas do
             parsed =
               BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
 
-            (parsed.script_type == :dstas and parsed.dstas != nil and parsed.dstas.frozen) or
+            (parsed.script_type == :stas3 and parsed.stas3 != nil and parsed.stas3.frozen) or
               (parsed.script_type == :stas and parsed.stas != nil and Map.get(parsed.stas, :frozen, false))
           end)
 
@@ -610,8 +610,8 @@ defmodule BSV.Tokens.Factory.Stas do
                 BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
 
               cond do
-                parsed.script_type == :dstas and parsed.dstas != nil ->
-                  match?({:swap, %{}}, parsed.dstas.action_data_parsed)
+                parsed.script_type == :stas3 and parsed.stas3 != nil ->
+                  match?({:swap, %{}}, parsed.stas3.action_data_parsed)
 
                 true ->
                   false
@@ -634,7 +634,7 @@ defmodule BSV.Tokens.Factory.Stas do
       action_data = Map.get(dest, :action_data, nil)
       frozen = Map.get(dest, :frozen, false)
 
-      case DstasBuilder.build_dstas_locking_script(
+      case Stas3Builder.build_stas3_locking_script(
              dest.owner_pkh,
              dest.redemption_pkh,
              action_data,

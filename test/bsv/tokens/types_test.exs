@@ -1,14 +1,14 @@
 defmodule BSV.Tokens.TypesTest do
   use ExUnit.Case, async: true
 
-  alias BSV.Tokens.{DstasSpendType, Payment, Destination, DstasDestination, DstasLockingParams, DstasOutputParams, TokenInput}
+  alias BSV.Tokens.{Stas3SpendType, Payment, Destination, Stas3Destination, Stas3LockingParams, Stas3OutputParams, TokenInput}
 
-  describe "DstasSpendType" do
+  describe "Stas3SpendType" do
     test "to_byte for all types" do
-      assert DstasSpendType.to_byte(:transfer) == 1
-      assert DstasSpendType.to_byte(:freeze_unfreeze) == 2
-      assert DstasSpendType.to_byte(:confiscation) == 3
-      assert DstasSpendType.to_byte(:swap_cancellation) == 4
+      assert Stas3SpendType.to_byte(:transfer) == 1
+      assert Stas3SpendType.to_byte(:freeze_unfreeze) == 2
+      assert Stas3SpendType.to_byte(:confiscation) == 3
+      assert Stas3SpendType.to_byte(:swap_cancellation) == 4
     end
   end
 
@@ -29,23 +29,23 @@ defmodule BSV.Tokens.TypesTest do
     end
   end
 
-  describe "DstasDestination struct" do
+  describe "Stas3Destination struct" do
     test "creates with defaults" do
-      d = %DstasDestination{address: "1abc", satoshis: 500, spend_type: :transfer}
+      d = %Stas3Destination{address: "1abc", satoshis: 500, spend_type: :transfer}
       assert d.action_data == nil
     end
   end
 
-  describe "DstasLockingParams struct" do
+  describe "Stas3LockingParams struct" do
     test "creates with defaults" do
-      p = %DstasLockingParams{address: "1abc", spend_type: :transfer}
+      p = %Stas3LockingParams{address: "1abc", spend_type: :transfer}
       assert p.action_data == nil
     end
   end
 
-  describe "DstasOutputParams struct" do
+  describe "Stas3OutputParams struct" do
     test "creates with defaults" do
-      p = %DstasOutputParams{satoshis: 100, owner_pkh: <<0::160>>, redemption_pkh: <<0::160>>}
+      p = %Stas3OutputParams{satoshis: 100, owner_pkh: <<0::160>>, redemption_pkh: <<0::160>>}
       assert p.frozen == false
       assert p.freezable == true
       assert p.service_fields == []

@@ -1,6 +1,6 @@
-defmodule BSV.Tokens.Bundle.DstasBundleTest do
+defmodule BSV.Tokens.Bundle.Stas3BundleTest do
   @moduledoc """
-  Tests for DstasBundleFactory — automatic merge/split/transfer transaction planning.
+  Tests for Stas3BundleFactory — automatic merge/split/transfer transaction planning.
 
   Covers happy paths (single/multi UTXO, multi-recipient, merge tree, fee chaining,
   note placement, spend type flags) and failure conditions (empty outputs, zero
@@ -12,9 +12,9 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
   alias BSV.{PrivateKey, PublicKey, Crypto, Script}
   alias BSV.Transaction
   alias BSV.Transaction.{Input, Output}
-  alias BSV.Tokens.Bundle.DstasBundle
-  alias BSV.Tokens.Script.DstasBuilder
-  alias BSV.Tokens.DstasOutputParams
+  alias BSV.Tokens.Bundle.Stas3Bundle
+  alias BSV.Tokens.Script.Stas3Builder
+  alias BSV.Tokens.Stas3OutputParams
 
   # ── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
 
   defp make_stas_utxo(txid_hex, satoshis, owner_pkh, redemption_pkh) do
     {:ok, locking_script} =
-      DstasBuilder.build_dstas_locking_script(
+      Stas3Builder.build_stas3_locking_script(
         owner_pkh,
         redemption_pkh,
         nil,
@@ -87,7 +87,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
     calls = :ets.new(:bundle_test_calls, [:set, :public])
     :ets.insert(calls, {:unlocking_calls, []})
 
-    bundle = %DstasBundle{
+    bundle = %Stas3Bundle{
       stas_wallet: %{
         address: key_to_address(stas_key),
         private_key: stas_key
@@ -100,7 +100,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       get_funding_utxo: fn _request -> fee_utxo end,
       get_transactions: fn _txid_hexes -> %{} end,
       build_locking_params: fn args ->
-        %DstasOutputParams{
+        %Stas3OutputParams{
           owner_pkh: owner_pkh,
           redemption_pkh: redemption_pkh,
           frozen: false,
@@ -145,7 +145,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [%{recipient: r, satoshis: 1000}]
       })
 
@@ -162,7 +162,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [
           %{recipient: r, satoshis: 250},
           %{recipient: r, satoshis: 250},
@@ -182,7 +182,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [
           %{recipient: r, satoshis: 200},
           %{recipient: r, satoshis: 200},
@@ -213,7 +213,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
 
       outputs = for _ <- 1..recipients_count, do: %{recipient: r, satoshis: 1}
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: outputs,
         note: [<<0xDE, 0xAD, 0xBE, 0xEF>>]
       })
@@ -249,7 +249,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
 
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [%{recipient: r, satoshis: 1000}]
       })
 
@@ -280,7 +280,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       r = recipient(key_to_address(stas_key))
 
       # Request only 800 of 1100 total
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [%{recipient: r, satoshis: 800}]
       })
 
@@ -300,7 +300,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
 
       note = [<<0xAA, 0xBB, 0xCC>>]
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [
           %{recipient: r, satoshis: 200},
           %{recipient: r, satoshis: 200},
@@ -340,7 +340,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       r = recipient(key_to_address(stas_key))
 
       # Test freeze
-      {:ok, _} = DstasBundle.create_freeze_bundle(bundle, 1000, r)
+      {:ok, _} = Stas3Bundle.create_freeze_bundle(bundle, 1000, r)
       freeze_calls = get_unlocking_calls(calls)
       assert length(freeze_calls) > 0
       assert Enum.all?(freeze_calls, fn c -> c.spend_type == :freeze end)
@@ -348,7 +348,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
 
       # Reset calls and test unfreeze
       :ets.insert(calls, {:unlocking_calls, []})
-      {:ok, _} = DstasBundle.create_unfreeze_bundle(bundle, 1000, r)
+      {:ok, _} = Stas3Bundle.create_unfreeze_bundle(bundle, 1000, r)
       unfreeze_calls = get_unlocking_calls(calls)
       assert length(unfreeze_calls) > 0
       assert Enum.all?(unfreeze_calls, fn c -> c.spend_type == :unfreeze end)
@@ -364,21 +364,21 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
 
       # Transfer
       %{bundle: bundle, calls_table: calls} = make_bundle([utxo])
-      {:ok, _} = DstasBundle.create_transfer_bundle(bundle, 1000, r)
+      {:ok, _} = Stas3Bundle.create_transfer_bundle(bundle, 1000, r)
       transfer_calls = get_unlocking_calls(calls)
       assert length(transfer_calls) > 0
       assert Enum.all?(transfer_calls, fn c -> c.is_freeze_like == false end)
 
       # Swap
       %{bundle: bundle2, calls_table: calls2} = make_bundle([utxo])
-      {:ok, _} = DstasBundle.create_swap_bundle(bundle2, 1000, r)
+      {:ok, _} = Stas3Bundle.create_swap_bundle(bundle2, 1000, r)
       swap_calls = get_unlocking_calls(calls2)
       assert length(swap_calls) > 0
       assert Enum.all?(swap_calls, fn c -> c.is_freeze_like == false end)
 
       # Confiscation
       %{bundle: bundle3, calls_table: calls3} = make_bundle([utxo])
-      {:ok, _} = DstasBundle.create_confiscation_bundle(bundle3, 1000, r)
+      {:ok, _} = Stas3Bundle.create_confiscation_bundle(bundle3, 1000, r)
       confiscation_calls = get_unlocking_calls(calls3)
       assert length(confiscation_calls) > 0
       assert Enum.all?(confiscation_calls, fn c -> c.is_freeze_like == false end)
@@ -394,7 +394,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo], 100_000)
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [
           %{recipient: r, satoshis: 200},
           %{recipient: r, satoshis: 200},
@@ -440,7 +440,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo])
 
       assert_raise BSV.Tokens.Error, ~r/at least one transfer output/, fn ->
-        DstasBundle.transfer(bundle, %{outputs: []})
+        Stas3Bundle.transfer(bundle, %{outputs: []})
       end
     end
 
@@ -453,7 +453,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       r = recipient(key_to_address(stas_key))
 
       assert_raise BSV.Tokens.Error, ~r/positive integer/, fn ->
-        DstasBundle.transfer(bundle, %{
+        Stas3Bundle.transfer(bundle, %{
           outputs: [%{recipient: r, satoshis: 0}]
         })
       end
@@ -467,7 +467,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [%{recipient: r, satoshis: 101}]
       })
 
@@ -480,7 +480,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([])
       r = recipient("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
 
-      {:ok, result} = DstasBundle.transfer(bundle, %{
+      {:ok, result} = Stas3Bundle.transfer(bundle, %{
         outputs: [%{recipient: r, satoshis: 1000}]
       })
 
@@ -492,32 +492,32 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
   describe "fee estimation" do
     test "14. fee estimation produces reasonable upper bound" do
       # Single input, single output
-      count1 = DstasBundle.estimate_transactions_count(1, 1)
-      fee1 = DstasBundle.estimate_bundle_fee_upper_bound(count1, 1, 1, 500)
+      count1 = Stas3Bundle.estimate_transactions_count(1, 1)
+      fee1 = Stas3Bundle.estimate_bundle_fee_upper_bound(count1, 1, 1, 500)
       assert fee1 >= 1200
       assert fee1 < 10_000
 
       # Multiple inputs, many outputs
-      count2 = DstasBundle.estimate_transactions_count(5, 20)
-      fee2 = DstasBundle.estimate_bundle_fee_upper_bound(count2, 5, 20, 500)
+      count2 = Stas3Bundle.estimate_transactions_count(5, 20)
+      fee2 = Stas3Bundle.estimate_bundle_fee_upper_bound(count2, 5, 20, 500)
       assert fee2 > fee1
       assert fee2 < 100_000
     end
 
     test "merge transaction count estimation" do
-      assert DstasBundle.estimate_merge_tx_count(0) == 0
-      assert DstasBundle.estimate_merge_tx_count(1) == 0
-      assert DstasBundle.estimate_merge_tx_count(2) == 1
-      assert DstasBundle.estimate_merge_tx_count(3) == 2
-      assert DstasBundle.estimate_merge_tx_count(4) == 3
+      assert Stas3Bundle.estimate_merge_tx_count(0) == 0
+      assert Stas3Bundle.estimate_merge_tx_count(1) == 0
+      assert Stas3Bundle.estimate_merge_tx_count(2) == 1
+      assert Stas3Bundle.estimate_merge_tx_count(3) == 2
+      assert Stas3Bundle.estimate_merge_tx_count(4) == 3
     end
 
     test "transfer transaction count estimation" do
-      assert DstasBundle.estimate_transfer_tx_count(1) == 1
-      assert DstasBundle.estimate_transfer_tx_count(4) == 1
-      assert DstasBundle.estimate_transfer_tx_count(5) == 2
-      assert DstasBundle.estimate_transfer_tx_count(7) == 2
-      assert DstasBundle.estimate_transfer_tx_count(8) == 3
+      assert Stas3Bundle.estimate_transfer_tx_count(1) == 1
+      assert Stas3Bundle.estimate_transfer_tx_count(4) == 1
+      assert Stas3Bundle.estimate_transfer_tx_count(5) == 2
+      assert Stas3Bundle.estimate_transfer_tx_count(7) == 2
+      assert Stas3Bundle.estimate_transfer_tx_count(8) == 3
     end
   end
 
@@ -529,7 +529,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
         %{satoshis: 1000}
       ]
 
-      result = DstasBundle.select_stas_utxos(utxos, 500)
+      result = Stas3Bundle.select_stas_utxos(utxos, 500)
       assert length(result) == 1
       assert hd(result).satoshis == 500
     end
@@ -541,7 +541,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
         %{satoshis: 300}
       ]
 
-      result = DstasBundle.select_stas_utxos(utxos, 250)
+      result = Stas3Bundle.select_stas_utxos(utxos, 250)
       assert length(result) == 2
       assert Enum.at(result, 0).satoshis == 100
       assert Enum.at(result, 1).satoshis == 200
@@ -553,7 +553,7 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
         %{satoshis: 1000}
       ]
 
-      result = DstasBundle.select_stas_utxos(utxos, 500)
+      result = Stas3Bundle.select_stas_utxos(utxos, 500)
       # Accumulation: 50 < 500, 50+1000 = 1050 >= 500
       assert length(result) == 2
     end
@@ -568,8 +568,8 @@ defmodule BSV.Tokens.Bundle.DstasBundleTest do
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, legacy} = DstasBundle.create_transfer_bundle(bundle, 1000, r)
-      {:ok, new_api} = DstasBundle.transfer(bundle, %{
+      {:ok, legacy} = Stas3Bundle.create_transfer_bundle(bundle, 1000, r)
+      {:ok, new_api} = Stas3Bundle.transfer(bundle, %{
         outputs: [%{recipient: r, satoshis: 1000}]
       })
 

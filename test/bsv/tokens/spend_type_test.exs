@@ -45,14 +45,14 @@ defmodule BSV.Tokens.SpendTypeTest do
     end
   end
 
-  describe "backward compatibility with DstasSpendType" do
-    alias BSV.Tokens.DstasSpendType
+  describe "backward compatibility with Stas3SpendType" do
+    alias BSV.Tokens.Stas3SpendType
 
-    test "DstasSpendType delegates to SpendType" do
-      assert DstasSpendType.to_byte(:transfer) == SpendType.to_byte(:transfer)
-      assert DstasSpendType.to_byte(:freeze_unfreeze) == SpendType.to_byte(:freeze_unfreeze)
-      assert DstasSpendType.to_byte(:confiscation) == SpendType.to_byte(:confiscation)
-      assert DstasSpendType.to_byte(:swap_cancellation) == SpendType.to_byte(:swap_cancellation)
+    test "Stas3SpendType delegates to SpendType" do
+      assert Stas3SpendType.to_byte(:transfer) == SpendType.to_byte(:transfer)
+      assert Stas3SpendType.to_byte(:freeze_unfreeze) == SpendType.to_byte(:freeze_unfreeze)
+      assert Stas3SpendType.to_byte(:confiscation) == SpendType.to_byte(:confiscation)
+      assert Stas3SpendType.to_byte(:swap_cancellation) == SpendType.to_byte(:swap_cancellation)
     end
   end
 end

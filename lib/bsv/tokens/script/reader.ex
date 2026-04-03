@@ -11,7 +11,7 @@ defmodule BSV.Tokens.Script.StasFields do
   defstruct [:owner_hash, :token_id, :redemption_hash, flags: <<>>]
 end
 
-defmodule BSV.Tokens.Script.DstasFields do
+defmodule BSV.Tokens.Script.Stas3Fields do
   @moduledoc "Fields extracted from a STAS 3.0 locking script."
 
   @type t :: %__MODULE__{
@@ -43,22 +43,22 @@ defmodule BSV.Tokens.Script.ParsedScript do
   @type t :: %__MODULE__{
           script_type: BSV.Tokens.ScriptType.t(),
           stas: BSV.Tokens.Script.StasFields.t() | nil,
-          dstas: BSV.Tokens.Script.DstasFields.t() | nil
+          stas3: BSV.Tokens.Script.Stas3Fields.t() | nil
         }
 
-  defstruct [:script_type, stas: nil, dstas: nil]
+  defstruct [:script_type, stas: nil, stas3: nil]
 end
 
 defmodule BSV.Tokens.Script.Reader do
   @moduledoc "Script reader for parsing STAS and STAS 3.0 locking scripts."
 
   alias BSV.Tokens.TokenId
-  alias BSV.Tokens.Script.{ParsedScript, StasFields, DstasFields}
+  alias BSV.Tokens.Script.{ParsedScript, StasFields, Stas3Fields}
 
   @stas_v2_min_len 1432
   @stas_v2_redemption_offset 1411
-  @dstas_base_prefix <<0x6D, 0x82, 0x73, 0x63>>
-  @dstas_base_template_len 2812
+  @stas3_base_prefix <<0x6D, 0x82, 0x73, 0x63>>
+  @stas3_base_template_len 2812
 
   @doc "Parse a locking script binary and classify it."
   @spec read_locking_script(binary()) :: ParsedScript.t()
@@ -66,7 +66,7 @@ defmodule BSV.Tokens.Script.Reader do
     cond do
       stas_btg?(script) -> parse_stas_btg(script)
       stas_v2?(script) -> parse_stas_v2(script)
-      dstas?(script) -> parse_dstas(script)
+      stas3?(script) -> parse_stas3(script)
       p2pkh?(script) -> %ParsedScript{script_type: :p2pkh}
       op_return?(script) -> %ParsedScript{script_type: :op_return}
       true -> %ParsedScript{script_type: :unknown}
@@ -193,25 +193,25 @@ defmodule BSV.Tokens.Script.Reader do
   end
 
   # STAS 3.0: starts with OP_DATA_20 (0x14) + 20 bytes owner
-  defp dstas?(<<0x14, _owner::binary-size(20), rest::binary>> = script)
+  defp stas3?(<<0x14, _owner::binary-size(20), rest::binary>> = script)
        when byte_size(script) >= 26 do
     case read_push_data(rest) do
       {:ok, _action_data, remaining} ->
         byte_size(remaining) >= 4 and
-          binary_part(remaining, 0, 4) == @dstas_base_prefix
+          binary_part(remaining, 0, 4) == @stas3_base_prefix
 
       :error ->
         false
     end
   end
 
-  defp dstas?(_), do: false
+  defp stas3?(_), do: false
 
-  defp parse_dstas(<<0x14, owner::binary-size(20), rest::binary>>) do
+  defp parse_stas3(<<0x14, owner::binary-size(20), rest::binary>>) do
     {:ok, action_data_raw, after_action} = read_push_data(rest)
 
     # Skip the base template to find OP_RETURN
-    op_return_pos = @dstas_base_template_len - 1
+    op_return_pos = @stas3_base_template_len - 1
 
     case after_action do
       <<_template::binary-size(op_return_pos), 0x6A, after_op_return::binary>> ->
@@ -240,7 +240,7 @@ defmodule BSV.Tokens.Script.Reader do
         action_data_parsed =
           case action_data_raw do
             <<0x01, _::binary>> = swap_data ->
-              case BSV.Tokens.Script.DstasBuilder.decode_swap_action_data(swap_data) do
+              case BSV.Tokens.Script.Stas3Builder.decode_swap_action_data(swap_data) do
                 {:ok, fields} -> {:swap, fields}
                 _ -> {:custom, swap_data}
               end
@@ -259,8 +259,8 @@ defmodule BSV.Tokens.Script.Reader do
           end
 
         %ParsedScript{
-          script_type: :dstas,
-          dstas: %DstasFields{
+          script_type: :stas3,
+          stas3: %Stas3Fields{
             owner: owner,
             redemption: redemption,
             flags: flags,
