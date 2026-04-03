@@ -7,7 +7,7 @@ defmodule BSV.Tokens.ScriptTypeTest do
     assert ScriptType.to_string(:p2pkh) == "P2PKH"
     assert ScriptType.to_string(:stas) == "STAS"
     assert ScriptType.to_string(:stas_btg) == "STAS-BTG"
-    assert ScriptType.to_string(:dstas) == "dSTAS"
+    assert ScriptType.to_string(:dstas) == "STAS 3.0"
     assert ScriptType.to_string(:op_return) == "OP_RETURN"
     assert ScriptType.to_string(:unknown) == "Unknown"
   end

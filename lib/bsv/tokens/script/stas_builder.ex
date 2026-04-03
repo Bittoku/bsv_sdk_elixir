@@ -5,7 +5,7 @@ defmodule BSV.Tokens.Script.StasBuilder do
   Supports both the legacy STAS v2 template (P2PKH-only, splittable flag) and
   the new STAS v3 template (P2MPKH, 2nd variable field, flags, service fields).
 
-  The v3 template shares its core logic with dSTAS — the difference is in the
+  The v3 template shares its core logic with STAS 3.0 — the difference is in the
   trailing metadata (flags and service fields appended after redemption PKH).
   """
 
@@ -54,7 +54,7 @@ defmodule BSV.Tokens.Script.StasBuilder do
   Build a STAS v3 locking script.
 
   Uses the new template with P2MPKH support, 2nd variable field, flags,
-  and service fields. This is the same core template used by dSTAS.
+  and service fields. This is the same core template used by STAS 3.0.
 
   ## Parameters
   - `owner_pkh` - 20-byte owner public key hash or multisig script hash

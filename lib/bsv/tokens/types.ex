@@ -47,7 +47,7 @@ end
 
 defmodule BSV.Tokens.DstasSpendType do
   @moduledoc """
-  dSTAS spending operation type.
+  STAS 3.0 spending operation type.
 
   **Deprecated:** Use `BSV.Tokens.SpendType` instead. This module delegates
   to `SpendType` for backward compatibility.
@@ -61,7 +61,7 @@ end
 
 defmodule BSV.Tokens.ActionData do
   @moduledoc """
-  Additional data attached to a dSTAS action.
+  Additional data attached to a STAS 3.0 action.
 
   ## Swap Variant
 
@@ -87,7 +87,7 @@ defmodule BSV.Tokens.ActionData do
 end
 
 defmodule BSV.Tokens.DstasLockingParams do
-  @moduledoc "Parameters for constructing a dSTAS locking script."
+  @moduledoc "Parameters for constructing a STAS 3.0 locking script."
 
   @type t :: %__MODULE__{
           address: String.t(),
@@ -99,7 +99,7 @@ defmodule BSV.Tokens.DstasLockingParams do
 end
 
 defmodule BSV.Tokens.DstasDestination do
-  @moduledoc "A destination specific to dSTAS token operations."
+  @moduledoc "A destination specific to STAS 3.0 token operations."
 
   @type t :: %__MODULE__{
           address: String.t(),
@@ -113,7 +113,7 @@ end
 
 defmodule BSV.Tokens.DstasOutputParams do
   @moduledoc """
-  Parameters for a DSTAS output in spend operations.
+  Parameters for a STAS 3.0 output in spend operations.
 
   The optional `action_data` field allows encoding swap action data or custom
   data into the output's locking script. For swap principal outputs, this should
@@ -148,7 +148,7 @@ end
 
 defmodule BSV.Tokens.TokenInput do
   @moduledoc """
-  A token input for DSTAS spend operations.
+  A token input for STAS 3.0 spend operations.
 
   The `signing_key` field accepts a `BSV.Tokens.SigningKey.t()`.
   For backward compatibility, `private_key` is still accepted but deprecated.

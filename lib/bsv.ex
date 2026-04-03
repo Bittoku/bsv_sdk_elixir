@@ -42,7 +42,7 @@ defmodule BSV do
   - `BSV.SPV.MerklePath` — BRC-74 merkle paths
   - `BSV.SPV.Beef` — BEEF container parsing
 
-  ### Tokens (STAS/DSTAS)
+  ### Tokens (STAS/STAS 3.0)
   - `BSV.Tokens` — token operations facade
   - `BSV.Tokens.Scheme` — token scheme definition
   - `BSV.Tokens.Script.Reader` — script classification

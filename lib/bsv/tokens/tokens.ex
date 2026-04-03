@@ -1,11 +1,11 @@
 defmodule BSV.Tokens do
   @moduledoc """
-  STAS and dSTAS token support for BSV.
+  STAS and STAS 3.0 token support for BSV.
 
   This module provides the public API for token operations including:
   - Script classification and parsing
   - STAS token issuance, transfer, split, merge, and redemption
-  - dSTAS token issuance, spend, freeze/unfreeze, and swap
+  - STAS 3.0 token issuance, spend, freeze/unfreeze, and swap
 
   ## Modules
 

@@ -8,7 +8,7 @@ defmodule BSV.MixProject do
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      description: "Feature-complete Bitcoin SV SDK for Elixir — primitives, scripts, transactions, wallet, tokens (STAS/DSTAS), SPV, and transport clients.",
+      description: "Feature-complete Bitcoin SV SDK for Elixir — primitives, scripts, transactions, wallet, tokens (STAS/STAS 3.0), SPV, and transport clients.",
       package: package(),
       docs: docs(),
       source_url: "https://github.com/Bittoku/bsv_sdk_elixir",

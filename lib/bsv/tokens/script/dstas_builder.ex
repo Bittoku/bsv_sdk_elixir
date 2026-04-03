@@ -1,5 +1,5 @@
 defmodule BSV.Tokens.Script.DstasBuilder do
-  @moduledoc "Builder for DSTAS (stas3-freeze-multisig) locking scripts."
+  @moduledoc "Builder for STAS 3.0 (stas3-freeze-multisig) locking scripts."
 
   alias BSV.Script
 

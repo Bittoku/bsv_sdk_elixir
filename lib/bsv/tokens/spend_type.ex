@@ -4,7 +4,7 @@ defmodule BSV.Tokens.SpendType do
 
   Every STAS unlocking script includes a spending-type value that tells the
   locking script which operation is being performed. This is a protocol-level
-  concept shared across all STAS templates (standard, BTG, dSTAS).
+  concept shared across all STAS templates (standard, BTG, STAS 3.0).
 
   ## Values
 

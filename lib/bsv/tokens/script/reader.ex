@@ -12,7 +12,7 @@ defmodule BSV.Tokens.Script.StasFields do
 end
 
 defmodule BSV.Tokens.Script.DstasFields do
-  @moduledoc "Fields extracted from a dSTAS locking script."
+  @moduledoc "Fields extracted from a STAS 3.0 locking script."
 
   @type t :: %__MODULE__{
           owner: <<_::160>>,
@@ -50,7 +50,7 @@ defmodule BSV.Tokens.Script.ParsedScript do
 end
 
 defmodule BSV.Tokens.Script.Reader do
-  @moduledoc "Script reader for parsing STAS and dSTAS locking scripts."
+  @moduledoc "Script reader for parsing STAS and STAS 3.0 locking scripts."
 
   alias BSV.Tokens.TokenId
   alias BSV.Tokens.Script.{ParsedScript, StasFields, DstasFields}
@@ -192,7 +192,7 @@ defmodule BSV.Tokens.Script.Reader do
     }
   end
 
-  # dSTAS: starts with OP_DATA_20 (0x14) + 20 bytes owner
+  # STAS 3.0: starts with OP_DATA_20 (0x14) + 20 bytes owner
   defp dstas?(<<0x14, _owner::binary-size(20), rest::binary>> = script)
        when byte_size(script) >= 26 do
     case read_push_data(rest) do

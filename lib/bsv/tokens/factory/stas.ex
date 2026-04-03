@@ -369,7 +369,7 @@ defmodule BSV.Tokens.Factory.Stas do
   Output parameters for v3 STAS operations.
 
   Same structure as `DstasOutputParams` — these are protocol-level fields, not
-  dSTAS-specific.
+  STAS 3.0-specific.
   """
   @type v3_output_params :: %{
           satoshis: non_neg_integer(),
