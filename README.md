@@ -11,7 +11,7 @@ A feature-complete Bitcoin SV SDK for Elixir, ported from the [Rust BSV SDK](htt
 - **Message** — BRC-78 ECIES encryption, BRC-77 signing
 - **Auth** — BRC-31 certificates, field encryption
 - **SPV** — BRC-74 merkle paths, BEEF parsing
-- **Tokens** — STAS, STAS-BTG, DSTAS token protocol support
+- **Tokens** — STAS, STAS-BTG, STAS3 token protocol support
 - **Transports** — ARC broadcaster, JungleBus queries
 
 ## Installation

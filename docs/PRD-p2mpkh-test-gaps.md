@@ -10,7 +10,7 @@
 
 ## 1. Context
 
-Commit `e8738c9` added P2MPKH (Pay-to-Multiple-Public-Key-Hash) support across the SDK. The core P2MPKH module has excellent test coverage (22 tests covering creation, serialization, hashing, and all error branches). However, the **integration layer** — templates, factories, and type resolution that wire P2MPKH into the existing STAS/DSTAS pipeline — has zero test coverage for the multi-key codepath.
+Commit `e8738c9` added P2MPKH (Pay-to-Multiple-Public-Key-Hash) support across the SDK. The core P2MPKH module has excellent test coverage (22 tests covering creation, serialization, hashing, and all error branches). However, the **integration layer** — templates, factories, and type resolution that wire P2MPKH into the existing STAS/STAS3 pipeline — has zero test coverage for the multi-key codepath.
 
 All 875 existing tests exercise only the P2PKH (single-key) path. The P2MPKH path through templates and factories is untested.
 
@@ -69,7 +69,7 @@ The `do_sign({:multi, keys, multisig}, hash, flag)` private function is the hear
 
 ### Gap 4: `Template.Dstas` P2MPKH signing — mirror of Gap 3
 
-**File:** `lib/bsv/tokens/template/dstas.ex`
+**File:** `lib/bsv/tokens/template/stas3.ex`
 
 Identical `do_sign` pattern. Needs at minimum:
 
@@ -77,7 +77,7 @@ Identical `do_sign` pattern. Needs at minimum:
 2. **`sign/3` with multi key** — same mock transaction approach
 3. **`estimate_length/3` for multi path**
 
-**Test file:** `test/bsv/tokens/template/dstas_p2mpkh_test.exs`
+**Test file:** `test/bsv/tokens/template/stas3_p2mpkh_test.exs`
 
 ### Gap 5: Factory integration with P2MPKH signing key
 

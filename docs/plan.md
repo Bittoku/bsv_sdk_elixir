@@ -45,7 +45,7 @@ Layered design — lean core, optional Ash framework integration:
 | `bsv-message` | 523 | ~11 | `BSV.Message` | BRC-78 encrypt, BRC-77 sign/verify |
 | `bsv-auth` | 3,103 | ~23 | `BSV.Auth` | BRC-31 certs, peer auth, sessions |
 | `bsv-spv` | 1,413 | ~22 | `BSV.SPV` | Merkle paths, BEEF parse/validate |
-| `bsv-tokens` | 4,026 | ~62 | `BSV.Tokens` | STAS/DSTAS token protocol |
+| `bsv-tokens` | 4,026 | ~62 | `BSV.Tokens` | STAS/STAS3 token protocol |
 | `bsv-arc` | 728 | ~16 | `BSV.ARC` | ARC transaction broadcaster |
 | `bsv-junglebus` | 533 | ~10 | `BSV.JungleBus` | GorillaPool chain queries |
 | **Total** | **24,622** | **402** | | |
@@ -111,10 +111,10 @@ Layered design — lean core, optional Ash framework integration:
 
 ### Phase E8: Tokens
 - `BSV.Tokens.Types` — TokenId, TokenScheme, ScriptType, etc.
-- `BSV.Tokens.Script.Reader` — classify STAS/DSTAS locking scripts
-- `BSV.Tokens.Script.Builder` — construct STAS/DSTAS locking scripts
+- `BSV.Tokens.Script.Reader` — classify STAS/STAS3 locking scripts
+- `BSV.Tokens.Script.Builder` — construct STAS/STAS3 locking scripts
 - `BSV.Tokens.STAS` — STAS factories (issue, transfer, split, merge, redeem)
-- `BSV.Tokens.DSTAS` — DSTAS factories (issue, freeze, unfreeze, swap)
+- `BSV.Tokens.STAS3` — STAS3 factories (issue, freeze, unfreeze, swap)
 - `BSV.Tokens.Bundle` — bundle planner and orchestration
 
 ### Phase E9: Transports

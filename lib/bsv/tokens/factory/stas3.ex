@@ -2,7 +2,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   @moduledoc """
   STAS3 transaction factories.
 
-  Pure functions that build complete, signed transactions for dSTAS token
+  Pure functions that build complete, signed transactions for STAS 3 token
   operations: two-tx issuance, base spend, freeze, unfreeze, and swap.
   """
 
