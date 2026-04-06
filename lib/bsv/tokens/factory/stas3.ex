@@ -8,9 +8,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   alias BSV.{Crypto, Script, PrivateKey, PublicKey}
   alias BSV.Transaction
-  alias BSV.Transaction.{Input, Output, P2PKH}
+  alias BSV.Transaction.{Input, Output, P2PKH, P2MPKH}
   alias BSV.Script.Address
   alias BSV.Tokens.Error
+  alias BSV.Tokens.SigningKey
   alias BSV.Tokens.Script.Stas3Builder
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
 
@@ -22,7 +23,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
           funding_vout: non_neg_integer(),
           funding_satoshis: non_neg_integer(),
           funding_locking_script: Script.t(),
-          funding_private_key: PrivateKey.t(),
+          funding_private_key: PrivateKey.t() | nil,
+          funding_key: SigningKey.t() | nil,
           outputs: [%{satoshis: non_neg_integer(), owner_pkh: <<_::160>>, freezable: boolean()}],
           fee_rate: non_neg_integer()
         }
@@ -40,6 +42,86 @@ defmodule BSV.Tokens.Factory.Stas3 do
         }
 
   # ---- Helpers ----
+
+  @doc false
+  # Resolve the effective signing key from a config map.
+  # Prefers `funding_key`, falls back to wrapping `funding_private_key` for backward compat.
+  defp resolve_funding_key(config) do
+    cond do
+      Map.has_key?(config, :funding_key) and config.funding_key != nil ->
+        config.funding_key
+
+      Map.has_key?(config, :funding_private_key) and config.funding_private_key != nil ->
+        SigningKey.single(config.funding_private_key)
+
+      true ->
+        raise "issue config has neither funding_key nor funding_private_key"
+    end
+  end
+
+  # Build a locking script from a signing key (P2PKH address or bare P2MPKH).
+  defp locking_script_from_signing_key({:single, key}) do
+    address = change_address(key)
+    Address.to_script(address)
+  end
+
+  defp locking_script_from_signing_key({:multi, _keys, multisig}) do
+    P2MPKH.lock(multisig)
+  end
+
+  # Compute the 20-byte hash for a signing key (PKH or MPKH).
+  defp hash160_from_signing_key(sk), do: SigningKey.hash160(sk)
+
+  # Sign a transaction input using the appropriate template for a signing key.
+  # For P2PKH, uses the standard P2PKH template.
+  # For P2MPKH, uses the bare multisig P2MPKH template.
+  defp sign_with_signing_key({:single, key}, tx, input_index) do
+    unlocker = P2PKH.unlock(key)
+    P2PKH.sign(unlocker, tx, input_index)
+  end
+
+  defp sign_with_signing_key({:multi, keys, multisig}, tx, input_index) do
+    case P2MPKH.unlock(keys, multisig) do
+      {:ok, unlocker} -> P2MPKH.sign(unlocker, tx, input_index)
+      {:error, _} = err -> err
+    end
+  end
+
+  # Derive an address string from a signing key (for change outputs).
+  # P2PKH: Base58Check-encoded PKH.
+  # P2MPKH: Not applicable for Base58 addresses — returns the PKH address of
+  # the first key as a fallback for change. In practice, issuance change should
+  # go back to the same locking script type, so we use locking_script_from_signing_key.
+  defp change_address_from_signing_key({:single, key}), do: change_address(key)
+
+  defp change_address_from_signing_key({:multi, _keys, _multisig} = _sk) do
+    # P2MPKH change uses the same multisig locking script, not a Base58 address.
+    # This function is only called for P2PKH; for P2MPKH, use locking_script_from_signing_key.
+    raise "use locking_script_from_signing_key for P2MPKH change outputs"
+  end
+
+  # Add fee change output, dispatching on signing key type for the change script.
+  defp add_fee_change_sk(tx, fee_satoshis, signing_key, fee_rate) do
+    est_size = estimate_size(length(tx.inputs), tx.outputs) + 34
+    fee = div(est_size * fee_rate + 999, 1000)
+
+    if fee_satoshis < fee do
+      {:error, Error.insufficient_funds(fee, fee_satoshis)}
+    else
+      change = fee_satoshis - fee
+
+      tx =
+        if change > 0 do
+          {:ok, change_script} = locking_script_from_signing_key(signing_key)
+          change_out = %Output{satoshis: change, locking_script: change_script, change: true}
+          %{tx | outputs: tx.outputs ++ [change_out]}
+        else
+          tx
+        end
+
+      {:ok, tx}
+    end
+  end
 
   defp make_input(txid, vout, satoshis, locking_script) do
     %Input{
@@ -109,11 +191,11 @@ defmodule BSV.Tokens.Factory.Stas3 do
       if total_tokens == 0 do
         {:error, Error.invalid_destination("total token satoshis must be > 0")}
       else
-        pubkey = PrivateKey.to_public_key(config.funding_private_key) |> PublicKey.compress()
-        issuer_pkh = Crypto.hash160(pubkey.point)
-        issuer_address = BSV.Base58.check_encode(issuer_pkh, 0x00)
+        # Resolve signing key: prefer funding_key, fall back to funding_private_key
+        funding_sk = resolve_funding_key(config)
+        issuer_pkh = hash160_from_signing_key(funding_sk)
 
-        with {:ok, issuer_script} <- Address.to_script(issuer_address),
+        with {:ok, issuer_script} <- locking_script_from_signing_key(funding_sk),
              {:ok, scheme_json} <- BSV.Tokens.Scheme.to_json(config.scheme) do
           # --- Contract TX ---
           fund_input =
@@ -144,7 +226,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
             contract_tx =
               if contract_change > 0 do
-                {:ok, change_script} = Address.to_script(issuer_address)
+                {:ok, change_script} = locking_script_from_signing_key(funding_sk)
 
                 change_out = %Output{
                   satoshis: contract_change,
@@ -157,22 +239,20 @@ defmodule BSV.Tokens.Factory.Stas3 do
                 contract_tx
               end
 
-            # Sign contract TX
-            unlocker = P2PKH.unlock(config.funding_private_key)
-
-            with {:ok, sig} <- P2PKH.sign(unlocker, contract_tx, 0) do
+            # Sign contract TX (dispatches P2PKH or P2MPKH based on key type)
+            with {:ok, sig} <- sign_with_signing_key(funding_sk, contract_tx, 0) do
               contract_tx = set_unlocking_script(contract_tx, 0, sig)
               contract_txid = Transaction.tx_id(contract_tx)
 
               # --- Issue TX ---
-              {:ok, contract_out_script} = Address.to_script(issuer_address)
+              {:ok, contract_out_script} = locking_script_from_signing_key(funding_sk)
 
               contract_input =
                 make_input(contract_txid, 0, total_tokens, contract_out_script)
 
               issue_inputs =
                 if contract_change > 0 do
-                  {:ok, change_scr} = Address.to_script(issuer_address)
+                  {:ok, change_scr} = locking_script_from_signing_key(funding_sk)
                   change_input = make_input(contract_txid, 2, contract_change, change_scr)
                   [contract_input, change_input]
                 else
@@ -190,10 +270,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
                 issue_tx =
                   if fee_available > 0 do
-                    case add_fee_change(
+                    case add_fee_change_sk(
                            issue_tx,
                            fee_available,
-                           config.funding_private_key,
+                           funding_sk,
                            config.fee_rate
                          ) do
                       {:ok, tx} -> tx
@@ -203,14 +283,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
                     issue_tx
                   end
 
-                # Sign all issue TX inputs (all P2PKH)
+                # Sign all issue TX inputs (dispatches P2PKH or P2MPKH)
                 result =
                   Enum.reduce_while(0..(length(issue_tx.inputs) - 1), {:ok, issue_tx}, fn i,
                                                                                           {:ok,
                                                                                            tx} ->
-                    unlocker = P2PKH.unlock(config.funding_private_key)
-
-                    case P2PKH.sign(unlocker, tx, i) do
+                    case sign_with_signing_key(funding_sk, tx, i) do
                       {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
                       error -> {:halt, error}
                     end
@@ -461,10 +539,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
         if ti.satoshis != expected do
           {:error, Error.amount_mismatch(ti.satoshis, expected)}
         else
-          # Build P2PKH redeem output
-          redeem_address = BSV.Base58.check_encode(config.redeem_pkh, 0x00)
-
-          with {:ok, redeem_script} <- Address.to_script(redeem_address) do
+          # Build redeem output — P2PKH or P2MPKH depending on config
+          with {:ok, redeem_script} <- resolve_redeem_script(config) do
             redeem_output = %Output{satoshis: config.redeem_satoshis, locking_script: redeem_script}
 
             # Build optional remaining STAS3 outputs
@@ -621,6 +697,25 @@ defmodule BSV.Tokens.Factory.Stas3 do
   end
 
   # ---- Private helpers ----
+
+  # Resolve the redeem output locking script from config.
+  # Supports three modes:
+  #   1. `redeem_key` (SigningKey) — dispatches P2PKH or P2MPKH locking script
+  #   2. `redeem_multisig` (multisig_script) — bare P2MPKH locking script
+  #   3. `redeem_pkh` (20-byte hash, default) — P2PKH locking script
+  defp resolve_redeem_script(config) do
+    cond do
+      Map.has_key?(config, :redeem_key) and config.redeem_key != nil ->
+        locking_script_from_signing_key(config.redeem_key)
+
+      Map.has_key?(config, :redeem_multisig) and config.redeem_multisig != nil ->
+        P2MPKH.lock(config.redeem_multisig)
+
+      true ->
+        redeem_address = BSV.Base58.check_encode(config.redeem_pkh, 0x00)
+        Address.to_script(redeem_address)
+    end
+  end
 
   defp build_stas3_outputs(outputs, redemption_pkh) do
     Enum.reduce_while(outputs, {:ok, []}, fn out, {:ok, acc} ->

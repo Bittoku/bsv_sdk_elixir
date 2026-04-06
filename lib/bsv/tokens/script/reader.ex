@@ -68,6 +68,7 @@ defmodule BSV.Tokens.Script.Reader do
       stas_v2?(script) -> parse_stas_v2(script)
       stas3?(script) -> parse_stas3(script)
       p2pkh?(script) -> %ParsedScript{script_type: :p2pkh}
+      p2mpkh?(script) -> %ParsedScript{script_type: :p2mpkh}
       op_return?(script) -> %ParsedScript{script_type: :op_return}
       true -> %ParsedScript{script_type: :unknown}
     end
@@ -283,6 +284,29 @@ defmodule BSV.Tokens.Script.Reader do
        do: true
 
   defp p2pkh?(_), do: false
+
+  # P2MPKH (bare multisig): OP_m <pk1_33> … <pkN_33> OP_n OP_CHECKMULTISIG
+  # OP_1..OP_16 = 0x51..0x60, each key push is <<0x21, 33_bytes>>, ends with OP_n 0xAE
+  @doc false
+  @spec p2mpkh?(binary()) :: boolean()
+  defp p2mpkh?(<<op_m, rest::binary>>)
+       when op_m >= 0x51 and op_m <= 0x60 do
+    m = op_m - 0x50
+    verify_multisig_keys(rest, m, 0)
+  end
+
+  defp p2mpkh?(_), do: false
+
+  # Recursively parse 33-byte key pushes, then verify trailing OP_n OP_CHECKMULTISIG
+  defp verify_multisig_keys(<<0x21, _pk::binary-size(33), rest::binary>>, m, count) do
+    verify_multisig_keys(rest, m, count + 1)
+  end
+
+  defp verify_multisig_keys(<<op_n, 0xAE>>, m, count)
+       when count >= 1 and count <= 16 and op_n == count + 0x50 and m <= count,
+       do: true
+
+  defp verify_multisig_keys(_, _, _), do: false
 
   defp op_return?(<<0x6A, _::binary>>), do: true
   defp op_return?(<<0x00, 0x6A, _::binary>>), do: true
