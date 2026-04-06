@@ -9,7 +9,7 @@
   - `BSV.Tokens.SigningKey`: `{:single, key}` | `{:multi, keys, multisig}` with `hash160/1`
   - `BSV.Tokens.OwnerAddress`: `{:address, string}` | `{:mpkh, hash}` for locking scripts
   - `Template.Stas`: `unlock_mpkh/3`, `unlock_from_signing_key/2` — auto-dispatch P2PKH vs P2MPKH
-  - `Template.Dstas`: same dispatch pattern with spend_type
+  - `Template.Stas3`: same dispatch pattern with spend_type
   - All STAS/STAS3 factories auto-dispatch via `Payment.resolve_signing_key/1`
   - Full backward compatibility — existing `private_key` field still works
 
@@ -21,7 +21,7 @@
 - **STAS3 Full Operations**
   - Split, merge, confiscation, and redeem operations
   - Transfer-swap, swap-swap modes with remainder legs and frozen rejection
-  - `DstasBundleFactory`: automatic merge/split/transfer planning
+  - `Stas3Bundle`: automatic merge/split/transfer planning
 
 ### Test Coverage
 

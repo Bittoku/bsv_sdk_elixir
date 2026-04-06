@@ -67,7 +67,7 @@ The `do_sign({:multi, keys, multisig}, hash, flag)` private function is the hear
 
 **Test file:** `test/bsv/tokens/template/stas_p2mpkh_test.exs`
 
-### Gap 4: `Template.Dstas` P2MPKH signing — mirror of Gap 3
+### Gap 4: `Template.Stas3` P2MPKH signing — mirror of Gap 3
 
 **File:** `lib/bsv/tokens/template/stas3.ex`
 
@@ -143,7 +143,7 @@ For the factory test (Gap 5), verify the change output's locking script contains
 - [ ] All 3 branches of `Payment.resolve_signing_key` tested
 - [ ] All 3 branches of `TokenInput.resolve_signing_key` tested
 - [ ] `Template.Stas.sign/3` tested with multi key — verifies script structure
-- [ ] `Template.Dstas.sign/3` tested with multi key — verifies script structure
+- [ ] `Template.Stas3.sign/3` tested with multi key — verifies script structure
 - [ ] At least one STAS factory op tested end-to-end with multi signing key
 - [ ] `P2MPKH.sign/3` (standalone) tested with mock transaction
 - [ ] `estimate_length` for multi path tested for multiple m-of-n combos

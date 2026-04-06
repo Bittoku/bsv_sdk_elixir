@@ -288,47 +288,92 @@ defmodule BSV.Tokens.Script.Reader do
   defp op_return?(<<0x00, 0x6A, _::binary>>), do: true
   defp op_return?(_), do: false
 
-  # Read a single push data item, returning {data_or_nil, remaining_binary}
-  defp read_push_data(<<0x00, rest::binary>>), do: {:ok, nil, rest}
-  defp read_push_data(<<0x52, rest::binary>>), do: {:ok, <<0x52>>, rest}
+  # Read a single push data item, returning {:ok, data_or_nil, remaining_binary}
+  # or :error on empty input. Handles all Bitcoin pushdata opcodes per STAS 3.0 spec.
 
+  # OP_0 (0x00): empty push
+  defp read_push_data(<<0x00, rest::binary>>), do: {:ok, nil, rest}
+
+  # OP_1NEGATE (0x4f): pushes -1, single byte opcode, no following data
+  defp read_push_data(<<0x4F, rest::binary>>), do: {:ok, <<0x4F>>, rest}
+
+  # OP_1 through OP_16 (0x51-0x60): push respective values 1-16
+  # Single byte opcodes, no following data. Return the opcode byte.
+  defp read_push_data(<<opcode, rest::binary>>) when opcode >= 0x51 and opcode <= 0x60 do
+    {:ok, <<opcode>>, rest}
+  end
+
+  # Direct push: 1-75 bytes (opcode IS the byte length)
   defp read_push_data(<<len, data::binary-size(len), rest::binary>>)
        when len >= 0x01 and len <= 0x4B do
     {:ok, data, rest}
   end
 
+  # OP_PUSHDATA1 (0x4c): 1-byte length prefix
   defp read_push_data(<<0x4C, len, data::binary-size(len), rest::binary>>) do
     {:ok, data, rest}
   end
 
+  # OP_PUSHDATA2 (0x4d): 2-byte LE length prefix
   defp read_push_data(<<0x4D, len::little-16, data::binary-size(len), rest::binary>>) do
     {:ok, data, rest}
   end
 
+  # OP_PUSHDATA4 (0x4e): 4-byte LE length prefix
+  defp read_push_data(<<0x4E, len::little-32, data::binary-size(len), rest::binary>>) do
+    {:ok, data, rest}
+  end
+
+  # Unknown opcode: skip 1 byte, return nil
   defp read_push_data(<<_opcode, rest::binary>>), do: {:ok, nil, rest}
+
+  # Empty input
   defp read_push_data(<<>>), do: :error
 
   @doc false
   def parse_push_data_items(data), do: do_parse_push_items(data, [])
 
+  # Parses consecutive pushdata items from OP_RETURN data, accumulating results.
+  # Handles all Bitcoin pushdata opcodes per STAS 3.0 spec.
+
   defp do_parse_push_items(<<>>, acc), do: Enum.reverse(acc)
 
+  # OP_0 (0x00): empty push
   defp do_parse_push_items(<<0x00, rest::binary>>, acc),
     do: do_parse_push_items(rest, [<<0x00>> | acc])
 
+  # OP_1NEGATE (0x4f): pushes -1, single byte opcode
+  defp do_parse_push_items(<<0x4F, rest::binary>>, acc),
+    do: do_parse_push_items(rest, [<<0x4F>> | acc])
+
+  # OP_1 through OP_16 (0x51-0x60): push respective values 1-16
+  defp do_parse_push_items(<<opcode, rest::binary>>, acc)
+       when opcode >= 0x51 and opcode <= 0x60 do
+    do_parse_push_items(rest, [<<opcode>> | acc])
+  end
+
+  # Direct push: 1-75 bytes (opcode IS the byte length)
   defp do_parse_push_items(<<len, data::binary-size(len), rest::binary>>, acc)
        when len >= 0x01 and len <= 0x4B do
     do_parse_push_items(rest, [data | acc])
   end
 
+  # OP_PUSHDATA1 (0x4c): 1-byte length prefix
   defp do_parse_push_items(<<0x4C, len, data::binary-size(len), rest::binary>>, acc) do
     do_parse_push_items(rest, [data | acc])
   end
 
+  # OP_PUSHDATA2 (0x4d): 2-byte LE length prefix
   defp do_parse_push_items(<<0x4D, len::little-16, data::binary-size(len), rest::binary>>, acc) do
     do_parse_push_items(rest, [data | acc])
   end
 
+  # OP_PUSHDATA4 (0x4e): 4-byte LE length prefix
+  defp do_parse_push_items(<<0x4E, len::little-32, data::binary-size(len), rest::binary>>, acc) do
+    do_parse_push_items(rest, [data | acc])
+  end
+
+  # Unknown opcode: skip 1 byte, preserve as raw opcode byte
   defp do_parse_push_items(<<opcode, rest::binary>>, acc) do
     do_parse_push_items(rest, [<<opcode>> | acc])
   end
