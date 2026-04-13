@@ -22,3 +22,8 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 bsv_sdk_elixir-*.tar
 
+# oh-my-claudecode local session state — never committed.
+/.omc/
+
+# Git worktrees for isolated subagent-driven development — never committed.
+/.worktrees/
