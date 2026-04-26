@@ -12,7 +12,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Script.Address
   alias BSV.Tokens.Error
   alias BSV.Tokens.SigningKey
-  alias BSV.Tokens.Script.{Stas3Builder, Templates}
+  alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates}
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
 
   # ---- Config types ----
@@ -880,4 +880,60 @@ defmodule BSV.Tokens.Factory.Stas3 do
       :ok
     end
   end
+
+  # ────────────────────────────────────────────────────────────────────
+  # STAS 3.0 v0.1 §8.1 / §9.5 — atomic-swap & merge piece-array trailing
+  # parameters (Item H wiring).
+  #
+  # The actual encoder/parser lives in `BSV.Tokens.Script.Stas3Pieces`;
+  # the factory exposes wrappers so callers building swap or merge
+  # transactions can append the spec-required trailing block to the
+  # unlocking script AFTER `Stas3Template.sign/3` has produced the
+  # signed authz prefix. We do NOT modify the existing 61-byte
+  # non-recursive paths — both paths remain valid input/output of the
+  # parser/encoder.
+  # ────────────────────────────────────────────────────────────────────
+
+  @doc """
+  Build the txType=1 atomic-swap trailing-parameter block per spec §9.5.
+
+  Wraps `BSV.Tokens.Script.Stas3Pieces.encode_atomic_swap_pieces/3`.
+
+  Returns the raw bytes:
+      counterparty_script_push ‖ piece_count_byte ‖ piece_array
+
+  Append this binary to a STAS 3.0 swap unlocking script (after the
+  authz block) when constructing a txType=1 transaction.
+  """
+  @spec build_atomic_swap_trailing(binary(), binary(), [non_neg_integer()]) ::
+          {:ok, binary()} | {:error, term()}
+  def build_atomic_swap_trailing(counterparty_locking_script, preceding_tx, asset_output_indices) do
+    Stas3Pieces.encode_atomic_swap_pieces(
+      counterparty_locking_script,
+      preceding_tx,
+      asset_output_indices
+    )
+  end
+
+  @doc """
+  Build the txType=2..7 merge trailing-parameter block per spec §8.1.
+
+  Wraps `BSV.Tokens.Script.Stas3Pieces.encode_merge_pieces/3`.
+
+  `piece_count` MUST be in `2..7` and equal `length(asset_output_indices)`.
+  """
+  @spec build_merge_trailing(2..7, binary(), [non_neg_integer()]) ::
+          {:ok, binary()} | {:error, term()}
+  def build_merge_trailing(piece_count, preceding_tx, asset_output_indices) do
+    Stas3Pieces.encode_merge_pieces(piece_count, preceding_tx, asset_output_indices)
+  end
+
+  @doc """
+  Parse a previously-encoded trailing parameter block.
+
+  Wraps `BSV.Tokens.Script.Stas3Pieces.parse/2`.
+  """
+  @spec parse_trailing(binary(), 1..7) ::
+          {:ok, map()} | {:error, term()}
+  def parse_trailing(bin, tx_type), do: Stas3Pieces.parse(bin, tx_type)
 end

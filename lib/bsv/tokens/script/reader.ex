@@ -12,7 +12,15 @@ defmodule BSV.Tokens.Script.StasFields do
 end
 
 defmodule BSV.Tokens.Script.Stas3Fields do
-  @moduledoc "Fields extracted from a STAS 3.0 locking script."
+  @moduledoc """
+  Fields extracted from a STAS 3.0 locking script.
+
+  `action_data_parsed` carries the legacy `{:swap, swap_fields()}` /
+  `{:custom, bytes}` form (61-byte projection of the swap descriptor,
+  no recursive `next`). For the full STAS 3.0 v0.1 §6.3 recursive
+  swap descriptor — including any `next` chain — see
+  `swap_descriptor`.
+  """
 
   @type t :: %__MODULE__{
           owner: <<_::160>>,
@@ -20,6 +28,7 @@ defmodule BSV.Tokens.Script.Stas3Fields do
           flags: binary(),
           action_data_raw: binary() | nil,
           action_data_parsed: BSV.Tokens.ActionData.t() | nil,
+          swap_descriptor: BSV.Tokens.SwapDescriptor.t() | nil,
           service_fields: [binary()],
           optional_data: [binary()],
           frozen: boolean()
@@ -31,6 +40,7 @@ defmodule BSV.Tokens.Script.Stas3Fields do
     flags: <<>>,
     action_data_raw: nil,
     action_data_parsed: nil,
+    swap_descriptor: nil,
     service_fields: [],
     optional_data: [],
     frozen: false
@@ -309,6 +319,22 @@ defmodule BSV.Tokens.Script.Reader do
               {:custom, other}
           end
 
+        # STAS 3.0 v0.1 §6.3: parse the FULL recursive swap descriptor
+        # (including any `next` chain) when the var2 push is a swap
+        # action (leading 0x01). Independent of the legacy 61-byte
+        # `action_data_parsed` projection above.
+        swap_descriptor =
+          case action_data_raw do
+            <<0x01, _::binary>> = swap_data ->
+              case BSV.Tokens.SwapDescriptor.parse(swap_data) do
+                {:ok, descriptor} -> descriptor
+                _ -> nil
+              end
+
+            _ ->
+              nil
+          end
+
         %ParsedScript{
           script_type: :stas3,
           stas3: %Stas3Fields{
@@ -317,6 +343,7 @@ defmodule BSV.Tokens.Script.Reader do
             flags: flags,
             action_data_raw: action_data_raw,
             action_data_parsed: action_data_parsed,
+            swap_descriptor: swap_descriptor,
             service_fields: service_fields,
             optional_data: [],
             frozen: frozen

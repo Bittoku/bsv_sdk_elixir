@@ -52,6 +52,13 @@ defmodule BSV.Tokens.Script.Stas3Builder do
         {true, nil} ->
           script <> <<0x52>>
 
+        # STAS 3.0 v0.1 §6.3 recursive swap descriptor: a full
+        # SwapDescriptor struct (possibly carrying a `next` chain) is
+        # encoded directly via SwapDescriptor.to_var2_bytes/1.
+        {_, {:swap, %BSV.Tokens.SwapDescriptor{} = descriptor}} ->
+          script <> push_data(BSV.Tokens.SwapDescriptor.to_var2_bytes(descriptor))
+
+        # Legacy 61-byte non-recursive swap_fields() map.
         {_, {:swap, %{} = fields}} ->
           script <> push_data(encode_swap_action_data(fields))
 
