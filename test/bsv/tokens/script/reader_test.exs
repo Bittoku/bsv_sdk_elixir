@@ -22,7 +22,9 @@ defmodule BSV.Tokens.Script.ReaderTest do
   end
 
   test "classify P2PKH" do
-    {:ok, script_bin} = Base.decode16("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac", case: :mixed)
+    {:ok, script_bin} =
+      Base.decode16("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac", case: :mixed)
+
     parsed = Reader.read_locking_script(script_bin)
     assert parsed.script_type == :p2pkh
     assert parsed.stas == nil
@@ -58,7 +60,9 @@ defmodule BSV.Tokens.Script.ReaderTest do
   end
 
   test "is_stas false for P2PKH" do
-    {:ok, script_bin} = Base.decode16("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac", case: :mixed)
+    {:ok, script_bin} =
+      Base.decode16("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac", case: :mixed)
+
     assert Reader.is_stas(script_bin) == false
   end
 
@@ -104,7 +108,10 @@ defmodule BSV.Tokens.Script.ReaderTest do
   test "classify STAS3 unfrozen" do
     owner = :binary.copy(<<0xAA>>, 20)
     redemption = :binary.copy(<<0xBB>>, 20)
-    {:ok, script} = Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, true, [], [])
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, true, [], [])
+
     script_bin = BSV.Script.to_binary(script)
 
     parsed = Reader.read_locking_script(script_bin)
@@ -117,11 +124,52 @@ defmodule BSV.Tokens.Script.ReaderTest do
   test "classify STAS3 frozen" do
     owner = :binary.copy(<<0xCC>>, 20)
     redemption = :binary.copy(<<0xDD>>, 20)
-    {:ok, script} = Stas3Builder.build_stas3_locking_script(owner, redemption, nil, true, true, [], [])
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, true, true, [], [])
+
     script_bin = BSV.Script.to_binary(script)
 
     parsed = Reader.read_locking_script(script_bin)
     assert parsed.script_type == :stas3
     assert parsed.stas3.frozen == true
+  end
+
+  # STAS 3.0 v0.1 §9.5 / §10.3 — arbitrator-free / signature-suppression sentinel.
+  test "arbitrator_free_owner? true when STAS3 owner is EMPTY_HASH160" do
+    empty = BSV.Tokens.Script.Templates.empty_hash160()
+    redemption = :binary.copy(<<0xBB>>, 20)
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(empty, redemption, nil, false, true, [], [])
+
+    script_bin = BSV.Script.to_binary(script)
+    assert Reader.arbitrator_free_owner?(script_bin) == true
+    assert Reader.arbitrator_free_owner?(script) == true
+
+    parsed = Reader.read_locking_script(script_bin)
+    assert Reader.arbitrator_free_owner?(parsed) == true
+    assert Reader.arbitrator_free_owner?(parsed.stas3) == true
+
+    # And EMPTY_HASH160 hex matches the spec sentinel.
+    assert Base.encode16(empty, case: :lower) == "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"
+  end
+
+  test "arbitrator_free_owner? false for normal STAS3 owner" do
+    owner = :binary.copy(<<0xAA>>, 20)
+    redemption = :binary.copy(<<0xBB>>, 20)
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, true, [], [])
+
+    refute Reader.arbitrator_free_owner?(BSV.Script.to_binary(script))
+  end
+
+  test "arbitrator_free_owner? false for non-STAS3 inputs" do
+    refute Reader.arbitrator_free_owner?(
+             <<0x76, 0xA9, 0x14>> <> :binary.copy(<<0xAA>>, 20) <> <<0x88, 0xAC>>
+           )
+
+    refute Reader.arbitrator_free_owner?(<<>>)
   end
 end

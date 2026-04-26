@@ -11,13 +11,34 @@ defmodule BSV.Tokens.Template.Stas3 do
   alias BSV.Transaction.{Sighash, P2MPKH}
   alias BSV.Tokens.SigningKey
 
-  defstruct [:signing_key, :spend_type, sighash_flag: 0x41]
+  defstruct [:signing_key, :spend_type, sighash_flag: 0x41, no_auth: false]
 
   @type t :: %__MODULE__{
-          signing_key: SigningKey.t(),
+          signing_key: SigningKey.t() | nil,
           spend_type: BSV.Tokens.Stas3SpendType.t(),
-          sighash_flag: non_neg_integer()
+          sighash_flag: non_neg_integer(),
+          no_auth: boolean()
         }
+
+  @doc """
+  Create a STAS3 unlocker that emits no signature.
+
+  Per STAS 3.0 v0.1 §9.5 / §10.3, when the input UTXO's `owner` field equals
+  `EMPTY_HASH160 = HASH160("")`, the swap engine accepts `OP_FALSE` from that
+  side — no signature/pubkey is required (arbitrator-free swap leg).
+
+  Use this template variant for any STAS 3.0 input whose owner is the empty
+  hash sentinel. The resulting unlocking script is a single `OP_FALSE` push.
+  """
+  @spec unlock_no_auth(BSV.Tokens.Stas3SpendType.t()) :: t()
+  def unlock_no_auth(spend_type) do
+    %__MODULE__{
+      signing_key: nil,
+      spend_type: spend_type,
+      sighash_flag: 0x41,
+      no_auth: true
+    }
+  end
 
   @doc "Create a STAS3 unlocker from a private key (P2PKH, backward compatible)."
   @spec unlock(PrivateKey.t(), BSV.Tokens.Stas3SpendType.t(), keyword()) :: t()
@@ -32,7 +53,12 @@ defmodule BSV.Tokens.Template.Stas3 do
   end
 
   @doc "Create a STAS3 P2MPKH unlocker."
-  @spec unlock_mpkh([PrivateKey.t()], P2MPKH.multisig_script(), BSV.Tokens.Stas3SpendType.t(), keyword()) ::
+  @spec unlock_mpkh(
+          [PrivateKey.t()],
+          P2MPKH.multisig_script(),
+          BSV.Tokens.Stas3SpendType.t(),
+          keyword()
+        ) ::
           t()
   def unlock_mpkh(private_keys, multisig, spend_type, opts \\ []) do
     flag = Keyword.get(opts, :sighash_flag, 0x41)
@@ -58,6 +84,13 @@ defmodule BSV.Tokens.Template.Stas3 do
 
   @doc "Sign a STAS3 input, producing a P2PKH or P2MPKH unlocking script."
   @impl BSV.Transaction.Template
+  def sign(%__MODULE__{no_auth: true}, _tx, _input_index) do
+    # STAS 3.0 v0.1 §9.5 / §10.3: arbitrator-free swap leg / signature
+    # suppression — push OP_FALSE in place of <sig> (and pubkey/redeem
+    # buffer) for that input.
+    {:ok, %Script{chunks: [{:data, <<>>}]}}
+  end
+
   def sign(%__MODULE__{signing_key: sk, sighash_flag: flag}, tx, input_index) do
     input = Enum.at(tx.inputs, input_index)
 
@@ -84,11 +117,13 @@ defmodule BSV.Tokens.Template.Stas3 do
     end
   end
 
+  # P2MPKH unlocking stack per STAS 3.0 v0.1 §10.2 line 414/434:
+  #   OP_0 <sig_1> ... <sig_m> <redeem_buffer>
   defp do_sign({:multi, keys, multisig}, hash, flag) do
     case sign_all_keys(keys, hash, flag, []) do
       {:ok, sig_chunks} ->
         ms_bytes = P2MPKH.to_script_bytes(multisig)
-        {:ok, %Script{chunks: sig_chunks ++ [{:data, ms_bytes}]}}
+        {:ok, %Script{chunks: [{:data, <<>>} | sig_chunks] ++ [{:data, ms_bytes}]}}
 
       {:error, _} = err ->
         err
@@ -110,11 +145,13 @@ defmodule BSV.Tokens.Template.Stas3 do
 
   @doc "Estimated unlocking script length in bytes."
   @impl BSV.Transaction.Template
+  def estimate_length(%__MODULE__{no_auth: true}, _, _), do: 1
   def estimate_length(%__MODULE__{signing_key: {:single, _}}, _, _), do: 106
 
+  # OP_0 (1B) + m sigs (m*73) + PUSHDATA1 prefix (2B) + redeem buffer (2 + 34*n)
   def estimate_length(%__MODULE__{signing_key: {:multi, _keys, ms}}, _, _) do
     m = ms.threshold
     n = length(ms.public_keys)
-    m * 73 + (3 + n * 34 + 3)
+    m * 73 + 34 * n + 5
   end
 end

@@ -12,7 +12,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Script.Address
   alias BSV.Tokens.Error
   alias BSV.Tokens.SigningKey
-  alias BSV.Tokens.Script.Stas3Builder
+  alias BSV.Tokens.Script.{Stas3Builder, Templates}
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
 
   # ---- Config types ----
@@ -65,8 +65,13 @@ defmodule BSV.Tokens.Factory.Stas3 do
     Address.to_script(address)
   end
 
+  # STAS 3.0 v0.1 §10.2: issuance/redemption boundary locking script for an
+  # MPKH-owned UTXO is the fixed 70-byte body (NOT the bare-multisig redeem
+  # buffer). The redeem buffer itself is only revealed at spend time on the
+  # unlocking stack.
   defp locking_script_from_signing_key({:multi, _keys, multisig}) do
-    P2MPKH.lock(multisig)
+    mpkh = P2MPKH.mpkh(multisig)
+    Script.from_binary(Templates.p2mpkh_locking_script(mpkh))
   end
 
   # Compute the 20-byte hash for a signing key (PKH or MPKH).
@@ -175,6 +180,22 @@ defmodule BSV.Tokens.Factory.Stas3 do
   defp set_unlocking_script(tx, index, script) do
     inputs = List.update_at(tx.inputs, index, fn inp -> %{inp | unlocking_script: script} end)
     %{tx | inputs: inputs}
+  end
+
+  # STAS 3.0 v0.1 §9.5 / §10.3: select the unlocker variant for a token input.
+  #
+  # If the input's locking script is STAS 3.0 and its `owner` field equals
+  # `EMPTY_HASH160` (the arbitrator-free / signature-suppression sentinel),
+  # return a no-auth template that emits `OP_FALSE` instead of <sig> + pubkey.
+  # Otherwise return the standard signing-key-driven template.
+  @doc false
+  def stas3_unlock_template_for(token_input, spend_type) do
+    if BSV.Tokens.Script.Reader.arbitrator_free_owner?(token_input.locking_script) do
+      Stas3Template.unlock_no_auth(spend_type)
+    else
+      sk = BSV.Tokens.TokenInput.resolve_signing_key(token_input)
+      Stas3Template.unlock_from_signing_key(sk, spend_type)
+    end
   end
 
   # ---- Factory functions ----
@@ -346,7 +367,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
             }
 
             with {:ok, tx} <-
-                   add_fee_change(tx, config.fee_satoshis, config.fee_private_key, config.fee_rate) do
+                   add_fee_change(
+                     tx,
+                     config.fee_satoshis,
+                     config.fee_private_key,
+                     config.fee_rate
+                   ) do
               # Sign token inputs with STAS3 template
               result =
                 Enum.reduce_while(
@@ -354,8 +380,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
                   {:ok, tx},
                   fn i, {:ok, tx} ->
                     ti = Enum.at(config.token_inputs, i)
-                    sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
-                    template = Stas3Template.unlock_from_signing_key(sk, config.spend_type)
+                    template = stas3_unlock_template_for(ti, config.spend_type)
 
                     case Stas3Template.sign(template, tx, i) do
                       {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
@@ -541,7 +566,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
         else
           # Build redeem output — P2PKH or P2MPKH depending on config
           with {:ok, redeem_script} <- resolve_redeem_script(config) do
-            redeem_output = %Output{satoshis: config.redeem_satoshis, locking_script: redeem_script}
+            redeem_output = %Output{
+              satoshis: config.redeem_satoshis,
+              locking_script: redeem_script
+            }
 
             # Build optional remaining STAS3 outputs
             with {:ok, stas3_outputs} <- build_stas3_dest_outputs(remaining) do
@@ -568,9 +596,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
                        config.fee_private_key,
                        config.fee_rate
                      ) do
-                # Sign token input with STAS3 template (spending type 1 = regular)
-                sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
-                template = Stas3Template.unlock_from_signing_key(sk, :transfer)
+                # Sign token input with STAS3 template (spending type 1 = regular).
+                # Honour the §9.5 / §10.3 arbitrator-free no-auth path even on redeem,
+                # so a redemption from an EMPTY_HASH160-owned UTXO can still be built.
+                template = stas3_unlock_template_for(ti, :transfer)
 
                 with {:ok, sig} <- Stas3Template.sign(template, tx, 0) do
                   tx = set_unlocking_script(tx, 0, sig)
@@ -612,7 +641,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   def build_stas3_transfer_swap_tx(config) do
     with :ok <- validate_swap_inputs(config.token_inputs),
          :ok <- validate_swap_destinations(config.destinations) do
-      build_stas3_base_tx(%{config | spend_type: :transfer})
+      dests = inherit_swap_remainders(config.token_inputs, config.destinations)
+      build_stas3_base_tx(%{config | spend_type: :transfer, destinations: dests})
     end
   end
 
@@ -638,7 +668,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   def build_stas3_swap_swap_tx(config) do
     with :ok <- validate_swap_inputs(config.token_inputs),
          :ok <- validate_swap_destinations(config.destinations) do
-      build_stas3_base_tx(%{config | spend_type: :swap_cancellation})
+      dests = inherit_swap_remainders(config.token_inputs, config.destinations)
+      build_stas3_base_tx(%{config | spend_type: :swap_cancellation, destinations: dests})
     end
   end
 
@@ -709,7 +740,11 @@ defmodule BSV.Tokens.Factory.Stas3 do
         locking_script_from_signing_key(config.redeem_key)
 
       Map.has_key?(config, :redeem_multisig) and config.redeem_multisig != nil ->
-        P2MPKH.lock(config.redeem_multisig)
+        # Spec v0.1 §10.2: redemption boundary uses the fixed 70-byte
+        # P2MPKH locking script (HASH160 of the redeem buffer, never the
+        # bare buffer itself).
+        mpkh = P2MPKH.mpkh(config.redeem_multisig)
+        Script.from_binary(Templates.p2mpkh_locking_script(mpkh))
 
       true ->
         redeem_address = BSV.Base58.check_encode(config.redeem_pkh, 0x00)
@@ -781,6 +816,59 @@ defmodule BSV.Tokens.Factory.Stas3 do
         end
     end
   end
+
+  # STAS 3.0 v0.1 §9.5: "Remainder / split outputs inherit the source UTXO's
+  # both owner and var2 fields." For a swap with N STAS outputs:
+  #   * outputs 0..1   = principal legs (caller-controlled)
+  #   * output 2 (if present) = remainder for leg 1 → inherits from input 0
+  #   * output 3 (if present) = remainder for leg 2 → inherits from input 1
+  #
+  # We rewrite remainder destinations in-place so the resulting locking script
+  # has both `owner_pkh` and `action_data` (var2) byte-identical to the source
+  # input — preserving the swap descriptor for any unmatched balance.
+  @doc false
+  def inherit_swap_remainders(token_inputs, destinations) do
+    destinations
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {dest, 2} ->
+        inherit_from_source(dest, Enum.at(token_inputs, 0))
+
+      {dest, 3} ->
+        inherit_from_source(dest, Enum.at(token_inputs, 1))
+
+      {dest, _} ->
+        dest
+    end)
+  end
+
+  defp inherit_from_source(dest, nil), do: dest
+
+  defp inherit_from_source(dest, ti) do
+    parsed = BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
+
+    case parsed do
+      %{script_type: :stas3, stas3: %{owner: owner} = f} when not is_nil(owner) ->
+        action_data = source_action_data(f)
+        %{dest | owner_pkh: owner, action_data: action_data}
+
+      _ ->
+        dest
+    end
+  end
+
+  # Recover the original action_data tuple from a parsed STAS 3.0 frame.
+  defp source_action_data(%{action_data_parsed: nil, action_data_raw: <<>>}), do: nil
+  defp source_action_data(%{action_data_parsed: nil, action_data_raw: nil}), do: nil
+  defp source_action_data(%{action_data_parsed: nil, action_data_raw: <<0x52>>}), do: nil
+
+  defp source_action_data(%{action_data_parsed: parsed}) when not is_nil(parsed),
+    do: parsed
+
+  defp source_action_data(%{action_data_raw: raw}) when is_binary(raw) and byte_size(raw) > 0,
+    do: {:custom, raw}
+
+  defp source_action_data(_), do: nil
 
   # Validate swap destinations: 2-4 outputs
   defp validate_swap_destinations(destinations) do

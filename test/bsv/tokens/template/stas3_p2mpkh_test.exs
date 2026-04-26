@@ -67,9 +67,7 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
 
       template =
-        Stas3Template.unlock_mpkh(Enum.take(privs, 1), ms, :freeze_unfreeze,
-          sighash_flag: 0x01
-        )
+        Stas3Template.unlock_mpkh(Enum.take(privs, 1), ms, :freeze_unfreeze, sighash_flag: 0x01)
 
       assert template.sighash_flag == 0x01
       assert template.spend_type == :freeze_unfreeze
@@ -93,8 +91,8 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
 
   # -- sign/3 with multi key --
 
-  describe "sign/3 with P2MPKH" do
-    test "produces script with M signature chunks + multisig script chunk (2-of-3)" do
+  describe "sign/3 with P2MPKH (STAS 3.0 v0.1 §10.2 OP_0 + sigs + redeem buffer)" do
+    test "produces script with OP_0 + M sig chunks + redeem buffer (2-of-3)" do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
       signing_keys = Enum.take(privs, 2)
@@ -105,10 +103,12 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
 
       assert {:ok, %Script{chunks: chunks}} = Stas3Template.sign(template, tx, 0)
 
-      # 2 sigs + 1 multisig script = 3
-      assert length(chunks) == 3
+      # OP_0 + 2 sigs + 1 redeem buffer = 4
+      assert length(chunks) == 4
+      assert {:data, <<>>} = hd(chunks)
 
-      sig_chunks = Enum.take(chunks, 2)
+      [_op0 | rest] = chunks
+      sig_chunks = Enum.take(rest, 2)
 
       Enum.each(sig_chunks, fn chunk ->
         assert {:data, sig_bytes} = chunk
@@ -117,12 +117,12 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
         assert :binary.last(sig_bytes) == 0x41
       end)
 
-      # Last chunk is serialized multisig script
+      # Last chunk is serialized redeem buffer
       assert {:data, ms_bytes} = List.last(chunks)
       assert ms_bytes == P2MPKH.to_script_bytes(ms)
     end
 
-    test "produces script with 1 signature chunk for 1-of-1" do
+    test "produces script with OP_0 + 1 sig chunk + redeem buffer for 1-of-1" do
       {privs, pubs} = gen_keys(1)
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
       template = Stas3Template.unlock_mpkh(privs, ms, :transfer)
@@ -131,9 +131,10 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
       tx = mock_tx_with_source(locking, 1000)
 
       assert {:ok, %Script{chunks: chunks}} = Stas3Template.sign(template, tx, 0)
-      assert length(chunks) == 2
+      assert length(chunks) == 3
+      assert {:data, <<>>} = hd(chunks)
 
-      assert {:data, sig_bytes} = hd(chunks)
+      [_op0, {:data, sig_bytes}, _redeem] = chunks
       assert byte_size(sig_bytes) >= 70
       assert :binary.last(sig_bytes) == 0x41
 
@@ -151,7 +152,7 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
       tx = mock_tx_with_source(locking, 5000)
 
       {:ok, %Script{chunks: chunks}} = Stas3Template.sign(template, tx, 0)
-      [{:data, sig1}, {:data, sig2} | _] = chunks
+      [_op0, {:data, sig1}, {:data, sig2} | _] = chunks
       assert sig1 != sig2
     end
 
@@ -177,31 +178,31 @@ defmodule BSV.Tokens.Template.Stas3P2MPKHTest do
 
   # -- estimate_length/3 --
 
-  describe "estimate_length/3 for multi path" do
-    test "2-of-3: m*73 + (3 + n*34 + 3)" do
+  describe "estimate_length/3 for multi path (STAS 3.0 v0.1 §10.2)" do
+    test "2-of-3: m*73 + 34*n + 5" do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
       template = Stas3Template.unlock_mpkh(Enum.take(privs, 2), ms, :transfer)
 
-      expected = 2 * 73 + (3 + 3 * 34 + 3)
+      expected = 2 * 73 + 34 * 3 + 5
       assert Stas3Template.estimate_length(template, nil, nil) == expected
     end
 
-    test "1-of-1: m*73 + (3 + n*34 + 3)" do
+    test "1-of-1: m*73 + 34*n + 5" do
       {privs, pubs} = gen_keys(1)
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
       template = Stas3Template.unlock_mpkh(privs, ms, :transfer)
 
-      expected = 1 * 73 + (3 + 1 * 34 + 3)
+      expected = 1 * 73 + 34 * 1 + 5
       assert Stas3Template.estimate_length(template, nil, nil) == expected
     end
 
-    test "3-of-5: m*73 + (3 + n*34 + 3)" do
+    test "3-of-5: m*73 + 34*n + 5" do
       {privs, pubs} = gen_keys(5)
       {:ok, ms} = P2MPKH.new_multisig(3, pubs)
       template = Stas3Template.unlock_mpkh(Enum.take(privs, 3), ms, :transfer)
 
-      expected = 3 * 73 + (3 + 5 * 34 + 3)
+      expected = 3 * 73 + 34 * 5 + 5
       assert Stas3Template.estimate_length(template, nil, nil) == expected
     end
 

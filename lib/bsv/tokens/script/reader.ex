@@ -78,6 +78,53 @@ defmodule BSV.Tokens.Script.Reader do
   @spec is_stas(binary()) :: boolean()
   def is_stas(script), do: stas_v2?(script)
 
+  @doc """
+  Check whether a STAS 3.0 locking script's `owner` field equals
+  `EMPTY_HASH160 = HASH160("") = b472a266d0bd89c13706a4132ccfb16f7c3b9fcb`.
+
+  Per STAS 3.0 v0.1 §9.5 / §10.3 (signature-suppression / arbitrator-free swap):
+  when the owner field on a swap input equals this sentinel, the engine accepts
+  `OP_FALSE` for both the signature and pubkey/redeem-buffer slot from that
+  side — i.e. that leg is spent without any signing involved.
+
+  Accepts either:
+  - the locking-script binary (or `BSV.Script.t()`), or
+  - a parsed `Stas3Fields` struct.
+
+  Returns `false` for non-STAS-3.0 scripts.
+  """
+  @spec arbitrator_free_owner?(
+          binary()
+          | BSV.Script.t()
+          | StasFields.t()
+          | Stas3Fields.t()
+          | ParsedScript.t()
+        ) ::
+          boolean()
+  def arbitrator_free_owner?(%Stas3Fields{owner: owner}),
+    do: owner == BSV.Tokens.Script.Templates.empty_hash160()
+
+  def arbitrator_free_owner?(%ParsedScript{stas3: %Stas3Fields{} = f}),
+    do: arbitrator_free_owner?(f)
+
+  def arbitrator_free_owner?(%ParsedScript{}), do: false
+
+  def arbitrator_free_owner?(%BSV.Script{} = script) do
+    arbitrator_free_owner?(BSV.Script.to_binary(script))
+  end
+
+  def arbitrator_free_owner?(script) when is_binary(script) do
+    case read_locking_script(script) do
+      %ParsedScript{script_type: :stas3, stas3: %Stas3Fields{} = f} ->
+        arbitrator_free_owner?(f)
+
+      _ ->
+        false
+    end
+  end
+
+  def arbitrator_free_owner?(_), do: false
+
   # STAS-BTG: starts with OP_IF (0x63), contains OP_ELSE/OP_ENDIF, then STAS v2 body (76 a9 14)
   defp stas_btg?(<<0x63, rest::binary>> = script) when byte_size(script) >= 1500 do
     # Look for OP_ENDIF (0x68) followed by STAS v2 body (76 a9 14) in first 400 bytes
@@ -116,6 +163,7 @@ defmodule BSV.Tokens.Script.Reader do
     {redemption_hash, flags} =
       if body_len >= 1431 do
         <<_::binary-size(1411), rpkh::binary-size(20), flag_data::binary>> = body
+
         flags =
           case parse_push_data_items(flag_data) do
             [first | _] -> first
@@ -162,8 +210,10 @@ defmodule BSV.Tokens.Script.Reader do
   end
 
   # STAS v2: prefix 76a914 at start, marker 88ac6976aa60 at byte 23, length >= 1432
-  defp stas_v2?(<<0x76, 0xA9, 0x14, _owner::binary-size(20), 0x88, 0xAC, 0x69, 0x76, 0xAA,
-                   0x60, _rest::binary>> = script) do
+  defp stas_v2?(
+         <<0x76, 0xA9, 0x14, _owner::binary-size(20), 0x88, 0xAC, 0x69, 0x76, 0xAA, 0x60,
+           _rest::binary>> = script
+       ) do
     byte_size(script) >= @stas_v2_min_len
   end
 
@@ -171,8 +221,8 @@ defmodule BSV.Tokens.Script.Reader do
 
   defp parse_stas_v2(script) do
     <<_prefix::binary-size(3), owner_hash::binary-size(20), _marker::binary-size(6),
-      _body::binary-size(@stas_v2_redemption_offset - 29),
-      redemption_hash::binary-size(20), op_return_data::binary>> = script
+      _body::binary-size(@stas_v2_redemption_offset - 29), redemption_hash::binary-size(20),
+      op_return_data::binary>> = script
 
     flags =
       case parse_push_data_items(op_return_data) do
@@ -278,35 +328,27 @@ defmodule BSV.Tokens.Script.Reader do
     end
   end
 
-  defp p2pkh?(
-         <<0x76, 0xA9, 0x14, _pkh::binary-size(20), 0x88, 0xAC>>
-       ),
-       do: true
+  defp p2pkh?(<<0x76, 0xA9, 0x14, _pkh::binary-size(20), 0x88, 0xAC>>),
+    do: true
 
   defp p2pkh?(_), do: false
 
-  # P2MPKH (bare multisig): OP_m <pk1_33> … <pkN_33> OP_n OP_CHECKMULTISIG
-  # OP_1..OP_16 = 0x51..0x60, each key push is <<0x21, 33_bytes>>, ends with OP_n 0xAE
-  @doc false
-  @spec p2mpkh?(binary()) :: boolean()
-  defp p2mpkh?(<<op_m, rest::binary>>)
-       when op_m >= 0x51 and op_m <= 0x60 do
-    m = op_m - 0x50
-    verify_multisig_keys(rest, m, 0)
+  # P2MPKH locking script per STAS 3.0 v0.1 §10.2 — fixed 70-byte body:
+  #   OP_DUP OP_HASH160 <MPKH:20B> OP_EQUALVERIFY OP_SIZE 0x21 OP_EQUAL
+  #   OP_IF OP_CHECKSIG OP_ELSE
+  #     OP_1 OP_SPLIT (OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP OP_SPLIT OP_ENDIF) x 5
+  #     OP_CHECKMULTISIG
+  #   OP_ENDIF
+  @p2mpkh_lock_suffix <<0x88, 0x82, 0x01, 0x21, 0x87, 0x63, 0xAC, 0x67, 0x51, 0x7F, 0x51, 0x7F,
+                        0x73, 0x63, 0x7C, 0x7F, 0x68, 0x51, 0x7F, 0x73, 0x63, 0x7C, 0x7F, 0x68,
+                        0x51, 0x7F, 0x73, 0x63, 0x7C, 0x7F, 0x68, 0x51, 0x7F, 0x73, 0x63, 0x7C,
+                        0x7F, 0x68, 0x51, 0x7F, 0x73, 0x63, 0x7C, 0x7F, 0x68, 0xAE, 0x68>>
+
+  defp p2mpkh?(<<0x76, 0xA9, 0x14, _mpkh::binary-size(20), suffix::binary-size(47)>>) do
+    suffix == @p2mpkh_lock_suffix
   end
 
   defp p2mpkh?(_), do: false
-
-  # Recursively parse 33-byte key pushes, then verify trailing OP_n OP_CHECKMULTISIG
-  defp verify_multisig_keys(<<0x21, _pk::binary-size(33), rest::binary>>, m, count) do
-    verify_multisig_keys(rest, m, count + 1)
-  end
-
-  defp verify_multisig_keys(<<op_n, 0xAE>>, m, count)
-       when count >= 1 and count <= 16 and op_n == count + 0x50 and m <= count,
-       do: true
-
-  defp verify_multisig_keys(_, _, _), do: false
 
   defp op_return?(<<0x6A, _::binary>>), do: true
   defp op_return?(<<0x00, 0x6A, _::binary>>), do: true

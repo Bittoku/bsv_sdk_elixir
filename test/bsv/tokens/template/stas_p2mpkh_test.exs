@@ -223,31 +223,31 @@ defmodule BSV.Tokens.Template.StasP2MPKHTest do
 
   # -- estimate_length/3 --
 
-  describe "estimate_length/3 for multi path" do
-    test "2-of-3: m*73 + (3 + n*34 + 3)" do
+  describe "estimate_length/3 for multi path (STAS 3.0 v0.1 §10.2)" do
+    test "2-of-3: m*73 + 34*n + 5" do
       {privs, pubs} = gen_keys(3)
       {:ok, ms} = P2MPKH.new_multisig(2, pubs)
       template = StasTemplate.unlock_mpkh(Enum.take(privs, 2), ms)
 
-      expected = 2 * 73 + (3 + 3 * 34 + 3)
+      expected = 2 * 73 + 34 * 3 + 5
       assert StasTemplate.estimate_length(template, nil, nil) == expected
     end
 
-    test "1-of-1: m*73 + (3 + n*34 + 3)" do
+    test "1-of-1: m*73 + 34*n + 5" do
       {privs, pubs} = gen_keys(1)
       {:ok, ms} = P2MPKH.new_multisig(1, pubs)
       template = StasTemplate.unlock_mpkh(privs, ms)
 
-      expected = 1 * 73 + (3 + 1 * 34 + 3)
+      expected = 1 * 73 + 34 * 1 + 5
       assert StasTemplate.estimate_length(template, nil, nil) == expected
     end
 
-    test "3-of-5: m*73 + (3 + n*34 + 3)" do
+    test "3-of-5: m*73 + 34*n + 5" do
       {privs, pubs} = gen_keys(5)
       {:ok, ms} = P2MPKH.new_multisig(3, pubs)
       template = StasTemplate.unlock_mpkh(Enum.take(privs, 3), ms)
 
-      expected = 3 * 73 + (3 + 5 * 34 + 3)
+      expected = 3 * 73 + 34 * 5 + 5
       assert StasTemplate.estimate_length(template, nil, nil) == expected
     end
 

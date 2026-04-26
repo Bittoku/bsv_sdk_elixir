@@ -182,7 +182,8 @@ defmodule BSV.Tokens.Factory.Stas3Test do
           txid: dummy_hash(),
           vout: 0,
           satoshis: 10_000,
-          locking_script: make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
+          locking_script:
+            make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
           private_key: token_key
         }
       ],
@@ -219,7 +220,8 @@ defmodule BSV.Tokens.Factory.Stas3Test do
           txid: dummy_hash(),
           vout: 0,
           satoshis: 5_000,
-          locking_script: make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
+          locking_script:
+            make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
           private_key: token_key
         }
       ],
@@ -982,7 +984,8 @@ defmodule BSV.Tokens.Factory.Stas3Test do
           txid: dummy_hash(),
           vout: 0,
           satoshis: 5_000,
-          locking_script: make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
+          locking_script:
+            make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
           private_key: test_key()
         }
       ],
@@ -1174,14 +1177,16 @@ defmodule BSV.Tokens.Factory.Stas3Test do
         txid: dummy_hash(),
         vout: 0,
         satoshis: 5_000,
-        locking_script: make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
+        locking_script:
+          make_stas3_locking(:binary.copy(<<0x11>>, 20), :binary.copy(<<0x22>>, 20)),
         private_key: test_key()
       },
       %TokenInput{
         txid: dummy_hash(),
         vout: 1,
         satoshis: 5_000,
-        locking_script: make_stas3_locking(:binary.copy(<<0x33>>, 20), :binary.copy(<<0x22>>, 20)),
+        locking_script:
+          make_stas3_locking(:binary.copy(<<0x33>>, 20), :binary.copy(<<0x22>>, 20)),
         private_key: test_key()
       }
     ]
@@ -1207,7 +1212,8 @@ defmodule BSV.Tokens.Factory.Stas3Test do
         txid: dummy_hash(),
         vout: 1,
         satoshis: 5_000,
-        locking_script: make_stas3_locking(:binary.copy(<<0x33>>, 20), :binary.copy(<<0x22>>, 20)),
+        locking_script:
+          make_stas3_locking(:binary.copy(<<0x33>>, 20), :binary.copy(<<0x22>>, 20)),
         private_key: test_key()
       }
     ]
@@ -1253,6 +1259,7 @@ defmodule BSV.Tokens.Factory.Stas3Test do
 
     # Bob's token A has swap action data
     cat_script = make_stas3_locking(cat_pkh, redemption_b)
+
     cat_script_hash =
       Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(cat_script))
 
@@ -1730,5 +1737,186 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     assert remainder_swap.requested_script_hash == cat_hash
     assert remainder_swap.rate_numerator == 1
     assert remainder_swap.rate_denominator == 2
+  end
+
+  # ── STAS 3.0 v0.1 §9.5 — Item F: remainder inherits BOTH owner and var2. ──
+
+  test "swap remainder inherits source owner and swap descriptor" do
+    fee_key = test_key()
+    bob_pkh = :binary.copy(<<0x11>>, 20)
+    cat_pkh = :binary.copy(<<0x33>>, 20)
+    redemption_a = :binary.copy(<<0x22>>, 20)
+    redemption_b = :binary.copy(<<0x44>>, 20)
+
+    cat_script = make_stas3_locking(cat_pkh, redemption_b)
+    cat_hash = Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(cat_script))
+
+    # Bob offers 200 sat at rate 1:2 — only 100 consumed → 100 left over.
+    bob_swap = swap_fields(cat_hash, bob_pkh, 1, 2)
+    bob_script = make_stas3_swap_locking(bob_pkh, redemption_a, bob_swap)
+
+    inputs = [
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 200,
+        locking_script: bob_script,
+        private_key: test_key()
+      },
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 1,
+        satoshis: 100,
+        locking_script: cat_script,
+        private_key: test_key()
+      }
+    ]
+
+    # Caller passes "wrong" owner/action_data on the remainder (idx 2);
+    # the factory MUST overwrite both with the source UTXO's owner + var2
+    # per §9.5.
+    destinations = [
+      %Stas3OutputParams{satoshis: 50, owner_pkh: bob_pkh, redemption_pkh: redemption_b},
+      %Stas3OutputParams{satoshis: 100, owner_pkh: cat_pkh, redemption_pkh: redemption_a},
+      %Stas3OutputParams{
+        satoshis: 150,
+        owner_pkh: :binary.copy(<<0xEE>>, 20),
+        redemption_pkh: redemption_a,
+        action_data: nil
+      }
+    ]
+
+    config = make_swap_config(inputs, destinations, fee_key)
+    {:ok, tx} = Stas3.build_stas3_transfer_swap_tx(config)
+
+    rem_parsed =
+      Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 2).locking_script))
+
+    assert rem_parsed.script_type == :stas3
+    # Remainder owner == source (input 0) owner
+    assert rem_parsed.stas3.owner == bob_pkh
+    # Remainder var2 == source (input 0) swap descriptor
+    assert {:swap, fields} = rem_parsed.stas3.action_data_parsed
+    assert fields.requested_script_hash == cat_hash
+    assert fields.requested_pkh == bob_pkh
+    assert fields.rate_numerator == 1
+    assert fields.rate_denominator == 2
+  end
+
+  # ── STAS 3.0 v0.1 §9.5 / §10.3 — Item E: arbitrator-free no-sig swap leg. ──
+
+  test "swap with EMPTY_HASH160 owner takes no-sig path" do
+    fee_key = test_key()
+    empty = BSV.Tokens.Script.Templates.empty_hash160()
+    cat_pkh = :binary.copy(<<0x33>>, 20)
+    redemption_a = :binary.copy(<<0x22>>, 20)
+    redemption_b = :binary.copy(<<0x44>>, 20)
+
+    cat_script = make_stas3_locking(cat_pkh, redemption_b)
+    cat_hash = Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(cat_script))
+
+    # Maker leg: owner = EMPTY_HASH160 (arbitrator-free).
+    no_auth_swap = swap_fields(cat_hash, empty, 1, 1)
+    no_auth_script = make_stas3_swap_locking(empty, redemption_a, no_auth_swap)
+
+    inputs = [
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 100,
+        locking_script: no_auth_script,
+        # Even with a private_key supplied, the factory must take the
+        # no-auth path because the owner is the empty-hash sentinel.
+        private_key: test_key()
+      },
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 1,
+        satoshis: 100,
+        locking_script: cat_script,
+        private_key: test_key()
+      }
+    ]
+
+    destinations = [
+      %Stas3OutputParams{satoshis: 100, owner_pkh: empty, redemption_pkh: redemption_b},
+      %Stas3OutputParams{satoshis: 100, owner_pkh: cat_pkh, redemption_pkh: redemption_a}
+    ]
+
+    config = make_swap_config(inputs, destinations, fee_key)
+    {:ok, tx} = Stas3.build_stas3_transfer_swap_tx(config)
+
+    # Input 0: arbitrator-free → unlocking script is a single OP_FALSE push.
+    no_auth_input = Enum.at(tx.inputs, 0)
+    no_auth_bin = Script.to_binary(no_auth_input.unlocking_script)
+    assert no_auth_bin == <<0x00>>
+
+    # Input 1: regular signed leg — much longer (sig + pubkey).
+    signed_input = Enum.at(tx.inputs, 1)
+    assert byte_size(Script.to_binary(signed_input.unlocking_script)) > 1
+  end
+
+  test "stas3_unlock_template_for selects no_auth when owner is EMPTY_HASH160" do
+    empty = BSV.Tokens.Script.Templates.empty_hash160()
+    redemption = :binary.copy(<<0x22>>, 20)
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(empty, redemption, nil, false, true, [], [])
+
+    ti = %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: 1_000,
+      locking_script: script,
+      private_key: test_key()
+    }
+
+    template = Stas3.stas3_unlock_template_for(ti, :transfer)
+    assert template.no_auth == true
+  end
+
+  # ── STAS 3.0 v0.1 §4 / §9.3 — Item G: confiscation txType is unrestricted. ─
+
+  test "confiscation builds successfully with arbitrary tx_type=5" do
+    fee_key = test_key()
+    issuer_pkh = :binary.copy(<<0x55>>, 20)
+    target_pkh = :binary.copy(<<0x66>>, 20)
+    redemption = :binary.copy(<<0x77>>, 20)
+
+    confiscatable_script = make_stas3_locking(target_pkh, redemption)
+
+    inputs = [
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 1_000,
+        locking_script: confiscatable_script,
+        private_key: test_key()
+      }
+    ]
+
+    destinations = [
+      %Stas3OutputParams{
+        satoshis: 1_000,
+        owner_pkh: issuer_pkh,
+        redemption_pkh: redemption
+      }
+    ]
+
+    config =
+      make_swap_config(inputs, destinations, fee_key)
+      # tx_type is informational only at the SDK layer (no encoded restriction
+      # for spend_type=3 per §4 / §9.3). Caller may set it to any value.
+      |> Map.put(:tx_type, 5)
+
+    {:ok, tx} = Stas3.build_stas3_confiscate_tx(config)
+    # Token input + fee input
+    assert length(tx.inputs) == 2
+    # Confiscation output round-trips through the parser
+    out_parsed =
+      Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+
+    assert out_parsed.script_type == :stas3
+    assert out_parsed.stas3.owner == issuer_pkh
   end
 end

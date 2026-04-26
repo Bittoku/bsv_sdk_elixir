@@ -137,9 +137,11 @@ defmodule BSV.Tokens.Template.Stas do
   @impl BSV.Transaction.Template
   def estimate_length(%__MODULE__{signing_key: {:single, _}}, _, _), do: 106
 
+  # Estimate sized to STAS 3.0 v0.1 §10.2 P2MPKH unlocking stack:
+  # OP_0 (1B) + m sigs (m*73) + PUSHDATA1 prefix (2B) + redeem buffer (2 + 34*n).
   def estimate_length(%__MODULE__{signing_key: {:multi, _keys, ms}}, _, _) do
     m = ms.threshold
     n = length(ms.public_keys)
-    m * 73 + (3 + n * 34 + 3)
+    m * 73 + 34 * n + 5
   end
 end
