@@ -1872,12 +1872,16 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     config = make_swap_config(inputs, destinations, fee_key)
     {:ok, tx} = Stas3.build_stas3_transfer_swap_tx(config)
 
-    # Input 0: arbitrator-free → unlocking script is a single OP_FALSE push.
+    # Input 0: arbitrator-free → unlock script is `witness ‖ OP_FALSE`. The
+    # final byte is the OP_FALSE marking the no-sig leg per spec §10.3.
     no_auth_input = Enum.at(tx.inputs, 0)
     no_auth_bin = Script.to_binary(no_auth_input.unlocking_script)
-    assert no_auth_bin == <<0x00>>
+    assert binary_part(no_auth_bin, byte_size(no_auth_bin) - 1, 1) == <<0x00>>
+    # The witness prefix encodes the spec §7 slots, so the script is much
+    # longer than a bare OP_FALSE.
+    assert byte_size(no_auth_bin) > 1
 
-    # Input 1: regular signed leg — much longer (sig + pubkey).
+    # Input 1: regular signed leg — witness ‖ <sig> <pubkey>.
     signed_input = Enum.at(tx.inputs, 1)
     assert byte_size(Script.to_binary(signed_input.unlocking_script)) > 1
   end

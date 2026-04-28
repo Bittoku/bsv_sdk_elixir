@@ -15,6 +15,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates}
   alias BSV.Tokens.Stas3.Validate, as: Stas3Validate
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
+  alias BSV.Tokens.Factory.Stas3.WitnessBuilder
 
   # ---- Config types ----
 
@@ -189,13 +190,24 @@ defmodule BSV.Tokens.Factory.Stas3 do
   # `EMPTY_HASH160` (the arbitrator-free / signature-suppression sentinel),
   # return a no-auth template that emits `OP_FALSE` instead of <sig> + pubkey.
   # Otherwise return the standard signing-key-driven template.
+  #
+  # When a `witness` (BSV.Tokens.Stas3UnlockWitness.t()) is supplied, attach
+  # it to the template via `with_witness/2` so the produced unlock script is
+  # `witness ‖ authz` per spec §7. Witness defaults to `nil` for callers
+  # that want only the legacy authz block (back-compat).
   @doc false
-  def stas3_unlock_template_for(token_input, spend_type) do
-    if BSV.Tokens.Script.Reader.arbitrator_free_owner?(token_input.locking_script) do
-      Stas3Template.unlock_no_auth(spend_type)
-    else
-      sk = BSV.Tokens.TokenInput.resolve_signing_key(token_input)
-      Stas3Template.unlock_from_signing_key(sk, spend_type)
+  def stas3_unlock_template_for(token_input, spend_type, witness \\ nil) do
+    template =
+      if BSV.Tokens.Script.Reader.arbitrator_free_owner?(token_input.locking_script) do
+        Stas3Template.unlock_no_auth(spend_type)
+      else
+        sk = BSV.Tokens.TokenInput.resolve_signing_key(token_input)
+        Stas3Template.unlock_from_signing_key(sk, spend_type)
+      end
+
+    case witness do
+      nil -> template
+      %BSV.Tokens.Stas3UnlockWitness{} = w -> Stas3Template.with_witness(template, w)
     end
   end
 
@@ -374,17 +386,32 @@ defmodule BSV.Tokens.Factory.Stas3 do
                      config.fee_private_key,
                      config.fee_rate
                    ) do
-              # Sign token inputs with STAS3 template
+              # Sign token inputs with STAS3 template, attaching the
+              # auto-derived spec §7 witness for each.
+              fee_idx = length(config.token_inputs)
+              tx_type = Map.get(config, :tx_type, :regular)
+              sighash_flag = Map.get(config, :sighash_flag, 0x41)
+
               result =
                 Enum.reduce_while(
                   0..(length(config.token_inputs) - 1),
                   {:ok, tx},
                   fn i, {:ok, tx} ->
                     ti = Enum.at(config.token_inputs, i)
-                    template = stas3_unlock_template_for(ti, config.spend_type)
 
-                    case Stas3Template.sign(template, tx, i) do
-                      {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
+                    with {:ok, witness} <-
+                           WitnessBuilder.derive_witness_for_input(
+                             tx,
+                             i,
+                             fee_idx,
+                             config.spend_type,
+                             tx_type,
+                             sighash_flag
+                           ),
+                         template = stas3_unlock_template_for(ti, config.spend_type, witness),
+                         {:ok, sig} <- Stas3Template.sign(template, tx, i) do
+                      {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
+                    else
                       error -> {:halt, error}
                     end
                   end
@@ -392,7 +419,6 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
               with {:ok, tx} <- result do
                 # Sign fee input with P2PKH
-                fee_idx = length(config.token_inputs)
                 unlocker = P2PKH.unlock(config.fee_private_key)
 
                 case P2PKH.sign(unlocker, tx, fee_idx) do
@@ -423,11 +449,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
     frozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: true} end)
 
     with :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
-      build_stas3_base_tx(%{
+      build_stas3_base_tx(
         config
-        | spend_type: :freeze_unfreeze,
-          destinations: frozen_dests
-      })
+        |> Map.put(:spend_type, :freeze_unfreeze)
+        |> Map.put(:destinations, frozen_dests)
+        |> Map.put_new(:tx_type, :regular)
+      )
     end
   end
 
@@ -441,11 +468,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
     unfrozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: false} end)
 
     with :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
-      build_stas3_base_tx(%{
+      build_stas3_base_tx(
         config
-        | spend_type: :freeze_unfreeze,
-          destinations: unfrozen_dests
-      })
+        |> Map.put(:spend_type, :freeze_unfreeze)
+        |> Map.put(:destinations, unfrozen_dests)
+        |> Map.put_new(:tx_type, :regular)
+      )
     end
   end
 
@@ -476,7 +504,11 @@ defmodule BSV.Tokens.Factory.Stas3 do
         {:error, Error.invalid_destination("split requires 1-4 destinations")}
 
       true ->
-        build_stas3_base_tx(%{config | spend_type: :transfer})
+        build_stas3_base_tx(
+          config
+          |> Map.put(:spend_type, :transfer)
+          |> Map.put_new(:tx_type, :regular)
+        )
     end
   end
 
@@ -506,7 +538,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
         {:error, Error.invalid_destination("merge requires 1-2 destinations")}
 
       true ->
-        build_stas3_base_tx(%{config | spend_type: :transfer})
+        # Two-input merge → §8.1 txType = :merge_2.
+        build_stas3_base_tx(
+          config
+          |> Map.put(:spend_type, :transfer)
+          |> Map.put_new(:tx_type, :merge_2)
+        )
     end
   end
 
@@ -528,7 +565,13 @@ defmodule BSV.Tokens.Factory.Stas3 do
   @spec build_stas3_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_confiscate_tx(config) do
     with :ok <- validate_all(config.token_inputs, &Stas3Validate.confiscation/1) do
-      build_stas3_base_tx(%{config | spend_type: :confiscation})
+      # Confiscation respects the caller's `:tx_type` if provided; defaults
+      # to `:regular` (txType byte 0) per §4 / §9.3 (no encoded restriction).
+      build_stas3_base_tx(
+        config
+        |> Map.put(:spend_type, :confiscation)
+        |> Map.put_new(:tx_type, :regular)
+      )
     end
   end
 
@@ -558,7 +601,11 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
       true ->
         with :ok <- Stas3Validate.swap_cancel(hd(config.token_inputs), config.destinations) do
-          build_stas3_base_tx(%{config | spend_type: :swap_cancellation})
+          build_stas3_base_tx(
+            config
+            |> Map.put(:spend_type, :swap_cancellation)
+            |> Map.put_new(:tx_type, :regular)
+          )
         end
     end
   end
@@ -652,9 +699,20 @@ defmodule BSV.Tokens.Factory.Stas3 do
                 # Sign token input with STAS3 template (spending type 1 = regular).
                 # Honour the §9.5 / §10.3 arbitrator-free no-auth path even on redeem,
                 # so a redemption from an EMPTY_HASH160-owned UTXO can still be built.
-                template = stas3_unlock_template_for(ti, :transfer)
+                tx_type = Map.get(config, :tx_type, :regular)
+                sighash_flag = Map.get(config, :sighash_flag, 0x41)
 
-                with {:ok, sig} <- Stas3Template.sign(template, tx, 0) do
+                with {:ok, witness} <-
+                       WitnessBuilder.derive_witness_for_input(
+                         tx,
+                         0,
+                         1,
+                         :transfer,
+                         tx_type,
+                         sighash_flag
+                       ),
+                     template = stas3_unlock_template_for(ti, :transfer, witness),
+                     {:ok, sig} <- Stas3Template.sign(template, tx, 0) do
                   tx = set_unlocking_script(tx, 0, sig)
 
                   # Sign fee input with P2PKH
@@ -695,7 +753,13 @@ defmodule BSV.Tokens.Factory.Stas3 do
     with :ok <- validate_swap_inputs(config.token_inputs),
          :ok <- validate_swap_destinations(config.destinations) do
       dests = inherit_swap_remainders(config.token_inputs, config.destinations)
-      build_stas3_base_tx(%{config | spend_type: :transfer, destinations: dests})
+
+      build_stas3_base_tx(
+        config
+        |> Map.put(:spend_type, :transfer)
+        |> Map.put(:destinations, dests)
+        |> Map.put_new(:tx_type, :atomic_swap)
+      )
     end
   end
 
@@ -722,7 +786,18 @@ defmodule BSV.Tokens.Factory.Stas3 do
     with :ok <- validate_swap_inputs(config.token_inputs),
          :ok <- validate_swap_destinations(config.destinations) do
       dests = inherit_swap_remainders(config.token_inputs, config.destinations)
-      build_stas3_base_tx(%{config | spend_type: :swap_cancellation, destinations: dests})
+
+      # Spec §9.5: atomic swap uses spendType = 1 (Transfer) on BOTH STAS
+      # inputs. SwapCancellation (4) is reserved for §9.4 swap-cancel; using
+      # it here would be a spec violation (this matched the prior bug fixed
+      # in the Rust SDK). The atomic-swap "shape" is signalled by tx_type
+      # AtomicSwap (1) plus the trailing piece-array params, not by spend_type.
+      build_stas3_base_tx(
+        config
+        |> Map.put(:spend_type, :transfer)
+        |> Map.put(:destinations, dests)
+        |> Map.put_new(:tx_type, :atomic_swap)
+      )
     end
   end
 
