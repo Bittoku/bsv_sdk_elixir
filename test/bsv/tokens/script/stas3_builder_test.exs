@@ -153,16 +153,24 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
       assert Stas3Builder.encode_unlock_amount(1) == <<0x01, 0x01>>
     end
 
-    test "0xFF → 1 byte" do
-      assert Stas3Builder.encode_unlock_amount(0xFF) == <<0x01, 0xFF>>
+    # 0x7F has the high bit clear → no sign-bit sentinel needed.
+    test "0x7F → 1 byte" do
+      assert Stas3Builder.encode_unlock_amount(0x7F) == <<0x01, 0x7F>>
+    end
+
+    # 0xFF has the high bit set → engine reads it as a script number; without
+    # an extra 0x00 byte it would decode as a NEGATIVE value (sign-bit form),
+    # so we append the disambiguating 0x00 sentinel and length grows by one.
+    test "0xFF → 2 bytes (sign-bit sentinel)" do
+      assert Stas3Builder.encode_unlock_amount(0xFF) == <<0x02, 0xFF, 0x00>>
     end
 
     test "0x100 → 2 bytes" do
       assert Stas3Builder.encode_unlock_amount(0x100) == <<0x02, 0x00, 0x01>>
     end
 
-    test "0xFFFF → 2 bytes" do
-      assert Stas3Builder.encode_unlock_amount(0xFFFF) == <<0x02, 0xFF, 0xFF>>
+    test "0xFFFF → 3 bytes (sign-bit sentinel)" do
+      assert Stas3Builder.encode_unlock_amount(0xFFFF) == <<0x03, 0xFF, 0xFF, 0x00>>
     end
 
     test "0x100000000 → 5 bytes" do
@@ -170,20 +178,21 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
                <<0x05, 0x00, 0x00, 0x00, 0x00, 0x01>>
     end
 
-    test "0xFFFFFFFFFFFFFF → 7 bytes" do
+    test "0xFFFFFFFFFFFFFF → 8 bytes (sign-bit sentinel)" do
       assert Stas3Builder.encode_unlock_amount(0xFFFFFFFFFFFFFF) ==
-               <<0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF>>
+               <<0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>>
     end
 
-    test "0xFFFFFFFFFFFFFFFF → 8 bytes (max)" do
+    test "0xFFFFFFFFFFFFFFFF → 9 bytes (max with sign-bit sentinel)" do
       assert Stas3Builder.encode_unlock_amount(0xFFFFFFFFFFFFFFFF) ==
-               <<0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF>>
+               <<0x09, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>>
     end
 
-    test "encoded payload length never exceeds 8 bytes for any 64-bit unsigned" do
+    test "encoded payload length is at most 9 bytes for any 64-bit unsigned" do
+      # 8 LE-bytes + at most one 0x00 sign-bit sentinel byte.
       for amount <- [1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFFFFFFFF, 0x1FFFFFFFFFFFFFFF] do
         <<len, _payload::binary-size(len)>> = Stas3Builder.encode_unlock_amount(amount)
-        assert len <= 8
+        assert len <= 9
       end
     end
   end

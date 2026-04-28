@@ -131,6 +131,21 @@ defmodule BSV.Tokens.Script.Stas3Builder do
   empty" — i.e. minimal-LE encoded, not fixed 8 bytes. Zero is encoded as the
   empty push.
 
+  ## Sign-bit safety
+
+  The engine treats the pushed bytes as a Bitcoin script number when it
+  later splices them into the BIP-143-style outputs blob via
+  `OP_BIN2NUM` / `OP_NUM2BIN`. Bitcoin script numbers are **sign-magnitude
+  little-endian**: when the high bit of the most-significant byte is set,
+  the value is interpreted as **negative**. For unsigned-LE token amounts
+  whose top byte happens to have its high bit set (any value with a top
+  byte ≥ 0x80, e.g. 0xBD0E = 48398), we MUST append a `0x00` sentinel
+  byte to keep the value non-negative when read as a script number.
+  Without it the engine reconstructs a wildly different change amount in
+  its outputs blob and the BIP-143 hashOutputs check fails (root cause
+  of `:eval_false` for any STAS 3.0 spend whose change amount has a top
+  byte ≥ 0x80).
+
   Returns the **wire bytes** of the push instruction (length prefix + LE
   payload) suitable for direct concatenation into an unlocking script binary.
 
@@ -142,8 +157,12 @@ defmodule BSV.Tokens.Script.Stas3Builder do
       iex> Stas3Builder.encode_unlock_amount(1)
       <<0x01, 0x01>>
 
+      iex> Stas3Builder.encode_unlock_amount(0x7F)
+      <<0x01, 0x7F>>
+
+      # 0xFF requires a sign-bit-disambiguation sentinel.
       iex> Stas3Builder.encode_unlock_amount(0xFF)
-      <<0x01, 0xFF>>
+      <<0x02, 0xFF, 0x00>>
 
       iex> Stas3Builder.encode_unlock_amount(0x100)
       <<0x02, 0x00, 0x01>>
@@ -153,7 +172,21 @@ defmodule BSV.Tokens.Script.Stas3Builder do
 
   def encode_unlock_amount(amount)
       when is_integer(amount) and amount > 0 and amount <= 0xFFFFFFFFFFFFFFFF do
-    push_data(amount_to_minimal_le(amount, <<>>))
+    push_data(amount_to_script_num_le(amount))
+  end
+
+  # Encode `amount` as little-endian bytes, appending a `0x00` sign-bit
+  # sentinel when the high bit of the most-significant byte is set so the
+  # engine reads it back as the same non-negative integer via OP_BIN2NUM.
+  defp amount_to_script_num_le(amount) do
+    bytes = amount_to_minimal_le(amount, <<>>)
+    last = :binary.last(bytes)
+
+    if Bitwise.band(last, 0x80) != 0 do
+      bytes <> <<0x00>>
+    else
+      bytes
+    end
   end
 
   defp amount_to_minimal_le(0, acc), do: acc

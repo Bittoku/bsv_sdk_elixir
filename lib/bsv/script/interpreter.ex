@@ -46,7 +46,13 @@ defmodule BSV.Script.Interpreter do
               max_ops: 500_000_000,
               max_script_num_len: 750_000,
               max_element_size: 520,
-              max_stack_size: 1_000
+              max_stack_size: 1_000,
+              trace: false,
+              trace_ring: [],
+              trace_ring_max: 60,
+              trace_path: nil,
+              trace_phase: :unlock,
+              halt: false
   end
 
   @doc """
@@ -77,42 +83,218 @@ defmodule BSV.Script.Interpreter do
       max_ops: if(after_genesis, do: 500_000_000, else: 500),
       max_script_num_len: if(after_genesis, do: 750_000, else: 4),
       max_element_size: if(after_genesis, do: 4_294_967_295, else: 520),
-      max_stack_size: if(after_genesis, do: 4_294_967_295, else: 1_000)
+      max_stack_size: if(after_genesis, do: 4_294_967_295, else: 1_000),
+      trace: Keyword.get(opts, :trace, false),
+      trace_path: Keyword.get(opts, :trace_path, nil),
+      trace_phase: :unlock
     }
 
+    # Reset trace ring for this verify call
+    if state.trace, do: Process.put(:__stas3_trace_ring__, [])
+
     # Execute unlocking script
-    with {:ok, state} <- execute_chunks(unlock.chunks, state),
-         # Reject unbalanced conditionals leaking from unlock into lock script
-         true <- state.cond_stack == [] || {:error, :unbalanced_conditional_in_unlock},
-         # Clear alt stack between scripts, reset counters
-         state = %{state | astack: [], num_ops: 0, chunk_index: 0, last_code_separator: nil},
-         # Execute locking script
-         {:ok, state} <- execute_chunks(lock.chunks, state) do
-      if state.cond_stack != [] do
-        {:error, :unbalanced_conditional}
-      else
-        check_final_stack(state)
-      end
+    {result, _final_state} = run_verify(unlock, lock, state)
+
+    if Keyword.get(opts, :trace, false) and match?({:error, _}, result) do
+      dump_trace(result, Keyword.get(opts, :trace_path))
     end
+
+    if state.trace, do: Process.delete(:__stas3_trace_ring__)
+
+    result
+  end
+
+  # Execute (unlock, lock) returning both the verification result and the
+  # last interpreter state observed (for trace dumping on error).
+  defp run_verify(unlock, lock, initial_state) do
+    case execute_chunks(unlock.chunks, initial_state) do
+      {:error, _} = err ->
+        {err, initial_state}
+
+      {:ok, state_after_unlock} ->
+        cond do
+          state_after_unlock.cond_stack != [] ->
+            {{:error, :unbalanced_conditional_in_unlock}, state_after_unlock}
+
+          true ->
+            lock_state = %{
+              state_after_unlock
+              | astack: [],
+                num_ops: 0,
+                chunk_index: 0,
+                last_code_separator: nil,
+                trace_phase: :lock
+            }
+
+            case execute_chunks(lock.chunks, lock_state) do
+              {:error, _} = err ->
+                {err, lock_state}
+
+              {:ok, final_state} ->
+                if final_state.cond_stack != [] do
+                  {{:error, :unbalanced_conditional}, final_state}
+                else
+                  {check_final_stack(final_state), final_state}
+                end
+            end
+        end
+    end
+  end
+
+  # ---- Trace dump (debug aid) ----
+
+  defp dump_trace(_result, nil), do: :ok
+
+  defp dump_trace(result, path) when is_binary(path) do
+    {:error, reason} = result
+    ring = Process.get(:__stas3_trace_ring__, [])
+
+    lines =
+      [
+        "trace dump — last #{length(ring)} ops before #{inspect(reason)}\n",
+        "format: <chunk_index>\\t<phase>\\t<op_hex>\\t<opname>\\tdepth=<n>\\ttop_sizes=[..]\n\n"
+        | Enum.reverse(ring)
+      ]
+
+    File.write!(path, IO.iodata_to_binary(lines))
+    :ok
+  rescue
+    _ -> :ok
   end
 
   # ---- Execute a list of chunks ----
 
   defp execute_chunks([], state), do: {:ok, state}
 
+  # Honour Genesis OP_RETURN halt: stop processing further chunks but
+  # propagate the current state with `halt = true` so the verifier can
+  # treat trailing bytes as inert.
+  defp execute_chunks(_chunks, %State{halt: true} = state), do: {:ok, state}
+
   defp execute_chunks([chunk | rest], state) do
+    state = maybe_trace(chunk, state)
+
     case execute_chunk(chunk, state) do
       {:ok, state} ->
         case check_stack_size(state) do
           {:ok, state} ->
             execute_chunks(rest, %{state | chunk_index: state.chunk_index + 1})
-          {:error, _} = err -> err
+
+          {:error, _} = err ->
+            err
         end
 
       {:error, _} = err ->
         err
     end
   end
+
+  defp maybe_trace(_chunk, %State{trace: false} = state), do: state
+
+  defp maybe_trace(chunk, %State{trace: true, trace_ring_max: max} = state) do
+    line = format_trace_line(chunk, state)
+    ring = [line | Process.get(:__stas3_trace_ring__, [])] |> Enum.take(max)
+    Process.put(:__stas3_trace_ring__, ring)
+    state
+  end
+
+  defp format_trace_line(chunk, state) do
+    sizes =
+      state.dstack
+      |> Enum.take(4)
+      |> Enum.map(&byte_size/1)
+      |> inspect()
+
+    {tag, name} =
+      case chunk do
+        {:data, d} ->
+          {String.pad_leading(byte_size(d) |> Integer.to_string(16), 2, "0"),
+           "PUSH(#{byte_size(d)})"}
+
+        {:op, op} ->
+          {String.pad_leading(Integer.to_string(op, 16), 2, "0"), opname(op)}
+      end
+
+    "#{state.chunk_index}\t#{state.trace_phase}\t#{tag}\t#{name}\tdepth=#{length(state.dstack)}\ttop_sizes=#{sizes}\n"
+  end
+
+  # Minimal opcode-name table for tracing (covers everything STAS 3.0 uses).
+  defp opname(0x00), do: "OP_0"
+  defp opname(0x4F), do: "OP_1NEGATE"
+  defp opname(op) when op >= 0x51 and op <= 0x60, do: "OP_#{op - 0x50}"
+  defp opname(0x61), do: "OP_NOP"
+  defp opname(0x63), do: "OP_IF"
+  defp opname(0x64), do: "OP_NOTIF"
+  defp opname(0x67), do: "OP_ELSE"
+  defp opname(0x68), do: "OP_ENDIF"
+  defp opname(0x69), do: "OP_VERIFY"
+  defp opname(0x6A), do: "OP_RETURN"
+  defp opname(0x6B), do: "OP_TOALTSTACK"
+  defp opname(0x6C), do: "OP_FROMALTSTACK"
+  defp opname(0x6D), do: "OP_2DROP"
+  defp opname(0x6E), do: "OP_2DUP"
+  defp opname(0x6F), do: "OP_3DUP"
+  defp opname(0x70), do: "OP_2OVER"
+  defp opname(0x71), do: "OP_2ROT"
+  defp opname(0x72), do: "OP_2SWAP"
+  defp opname(0x73), do: "OP_IFDUP"
+  defp opname(0x74), do: "OP_DEPTH"
+  defp opname(0x75), do: "OP_DROP"
+  defp opname(0x76), do: "OP_DUP"
+  defp opname(0x77), do: "OP_NIP"
+  defp opname(0x78), do: "OP_OVER"
+  defp opname(0x79), do: "OP_PICK"
+  defp opname(0x7A), do: "OP_ROLL"
+  defp opname(0x7B), do: "OP_ROT"
+  defp opname(0x7C), do: "OP_SWAP"
+  defp opname(0x7D), do: "OP_TUCK"
+  defp opname(0x7E), do: "OP_CAT"
+  defp opname(0x7F), do: "OP_SPLIT"
+  defp opname(0x80), do: "OP_NUM2BIN"
+  defp opname(0x81), do: "OP_BIN2NUM"
+  defp opname(0x82), do: "OP_SIZE"
+  defp opname(0x83), do: "OP_INVERT"
+  defp opname(0x84), do: "OP_AND"
+  defp opname(0x85), do: "OP_OR"
+  defp opname(0x86), do: "OP_XOR"
+  defp opname(0x87), do: "OP_EQUAL"
+  defp opname(0x88), do: "OP_EQUALVERIFY"
+  defp opname(0x8B), do: "OP_1ADD"
+  defp opname(0x8C), do: "OP_1SUB"
+  defp opname(0x8F), do: "OP_NEGATE"
+  defp opname(0x90), do: "OP_ABS"
+  defp opname(0x91), do: "OP_NOT"
+  defp opname(0x92), do: "OP_0NOTEQUAL"
+  defp opname(0x93), do: "OP_ADD"
+  defp opname(0x94), do: "OP_SUB"
+  defp opname(0x95), do: "OP_MUL"
+  defp opname(0x96), do: "OP_DIV"
+  defp opname(0x97), do: "OP_MOD"
+  defp opname(0x98), do: "OP_LSHIFT"
+  defp opname(0x99), do: "OP_RSHIFT"
+  defp opname(0x9A), do: "OP_BOOLAND"
+  defp opname(0x9B), do: "OP_BOOLOR"
+  defp opname(0x9C), do: "OP_NUMEQUAL"
+  defp opname(0x9D), do: "OP_NUMEQUALVERIFY"
+  defp opname(0x9E), do: "OP_NUMNOTEQUAL"
+  defp opname(0x9F), do: "OP_LESSTHAN"
+  defp opname(0xA0), do: "OP_GREATERTHAN"
+  defp opname(0xA1), do: "OP_LESSTHANOREQUAL"
+  defp opname(0xA2), do: "OP_GREATERTHANOREQUAL"
+  defp opname(0xA3), do: "OP_MIN"
+  defp opname(0xA4), do: "OP_MAX"
+  defp opname(0xA5), do: "OP_WITHIN"
+  defp opname(0xA6), do: "OP_RIPEMD160"
+  defp opname(0xA7), do: "OP_SHA1"
+  defp opname(0xA8), do: "OP_SHA256"
+  defp opname(0xA9), do: "OP_HASH160"
+  defp opname(0xAA), do: "OP_HASH256"
+  defp opname(0xAB), do: "OP_CODESEPARATOR"
+  defp opname(0xAC), do: "OP_CHECKSIG"
+  defp opname(0xAD), do: "OP_CHECKSIGVERIFY"
+  defp opname(0xAE), do: "OP_CHECKMULTISIG"
+  defp opname(0xAF), do: "OP_CHECKMULTISIGVERIFY"
+  defp opname(op), do: "OP_0x" <> Integer.to_string(op, 16)
 
   # ---- Execute a single chunk ----
 
@@ -264,6 +446,17 @@ defmodule BSV.Script.Interpreter do
   end
 
   # OP_RETURN
+  #
+  # Pre-Genesis: hard failure.
+  # Post-Genesis (`:utxo_after_genesis`): OP_RETURN halts script execution and
+  # treats any bytes that follow as inert data, leaving the current stack
+  # untouched for the final truthiness check. STAS 3.0 (and many other
+  # post-Genesis protocols) embed an `OP_RETURN <metadata>` tail at the end
+  # of the locking script, so we must honour the post-Genesis semantics here.
+  defp do_execute_op(0x6A, %State{after_genesis: true} = state) do
+    {:ok, %{state | halt: true}}
+  end
+
   defp do_execute_op(0x6A, _state), do: {:error, :op_return}
 
   # -- OP_1NEGATE --
