@@ -39,6 +39,23 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     script
   end
 
+  # Build a locking script with explicit `BSV.Tokens.ScriptFlags`. Used by
+  # tests that need CONFISCATABLE set (§9.3) or any non-default flag combo.
+  defp make_stas3_locking_with_flags(owner_pkh, redemption_pkh, %BSV.Tokens.ScriptFlags{} = flags) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner_pkh,
+        redemption_pkh,
+        nil,
+        false,
+        flags,
+        [],
+        []
+      )
+
+    script
+  end
+
   # ---- Issue flow tests ----
 
   test "issue txs structure" do
@@ -243,6 +260,9 @@ defmodule BSV.Tokens.Factory.Stas3Test do
   test "freeze tx output is frozen" do
     token_key = test_key()
     fee_key = test_key()
+    # Spec §9.2: freeze output's owner & redemption must equal the input —
+    # only `var2` may differ. Pin both ends to the same owner_pkh.
+    owner_pkh = :binary.copy(<<0x11>>, 20)
     redemption_pkh = :binary.copy(<<0x22>>, 20)
 
     config = %{
@@ -251,7 +271,7 @@ defmodule BSV.Tokens.Factory.Stas3Test do
           txid: dummy_hash(),
           vout: 0,
           satoshis: 5_000,
-          locking_script: make_stas3_locking(:binary.copy(<<0x11>>, 20), redemption_pkh),
+          locking_script: make_stas3_locking(owner_pkh, redemption_pkh),
           private_key: token_key
         }
       ],
@@ -263,7 +283,7 @@ defmodule BSV.Tokens.Factory.Stas3Test do
       destinations: [
         %Stas3OutputParams{
           satoshis: 5_000,
-          owner_pkh: :binary.copy(<<0x33>>, 20),
+          owner_pkh: owner_pkh,
           redemption_pkh: redemption_pkh,
           frozen: false,
           freezable: true,
@@ -284,6 +304,8 @@ defmodule BSV.Tokens.Factory.Stas3Test do
   test "unfreeze tx output is not frozen" do
     token_key = test_key()
     fee_key = test_key()
+    # Same §9.2 invariant: owner & redemption byte-identical across input/output.
+    owner_pkh = :binary.copy(<<0x11>>, 20)
     redemption_pkh = :binary.copy(<<0x22>>, 20)
 
     config = %{
@@ -292,7 +314,7 @@ defmodule BSV.Tokens.Factory.Stas3Test do
           txid: dummy_hash(),
           vout: 0,
           satoshis: 5_000,
-          locking_script: make_stas3_locking(:binary.copy(<<0x11>>, 20), redemption_pkh),
+          locking_script: make_stas3_locking(owner_pkh, redemption_pkh),
           private_key: token_key
         }
       ],
@@ -304,7 +326,7 @@ defmodule BSV.Tokens.Factory.Stas3Test do
       destinations: [
         %Stas3OutputParams{
           satoshis: 5_000,
-          owner_pkh: :binary.copy(<<0x33>>, 20),
+          owner_pkh: owner_pkh,
           redemption_pkh: redemption_pkh,
           frozen: true,
           freezable: true,
@@ -683,13 +705,17 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     owner_pkh = :binary.copy(<<0x11>>, 20)
     redemption_pkh = :binary.copy(<<0x22>>, 20)
 
+    # Spec §9.3: confiscation requires CONFISCATABLE flag set on the input.
+    confiscatable_flags = %BSV.Tokens.ScriptFlags{freezable: true, confiscatable: true}
+
     config = %{
       token_inputs: [
         %TokenInput{
           txid: dummy_hash(),
           vout: 0,
           satoshis: 5_000,
-          locking_script: make_stas3_locking(owner_pkh, redemption_pkh),
+          locking_script:
+            make_stas3_locking_with_flags(owner_pkh, redemption_pkh, confiscatable_flags),
           private_key: token_key
         }
       ],
@@ -1883,7 +1909,13 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     target_pkh = :binary.copy(<<0x66>>, 20)
     redemption = :binary.copy(<<0x77>>, 20)
 
-    confiscatable_script = make_stas3_locking(target_pkh, redemption)
+    # Spec §9.3: confiscation requires CONFISCATABLE flag set.
+    confiscatable_script =
+      make_stas3_locking_with_flags(
+        target_pkh,
+        redemption,
+        %BSV.Tokens.ScriptFlags{freezable: true, confiscatable: true}
+      )
 
     inputs = [
       %TokenInput{

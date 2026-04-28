@@ -187,4 +187,69 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
       end
     end
   end
+
+  # ── STAS 3.0 v0.1 §12 — engine constants baked into the template ───────
+  #
+  # The base template hex MUST contain the four spec §12 constants verbatim.
+  # If any of these drifts the engine will reject every signed input.
+  describe "engine_constants_baked_into_template" do
+    # Re-derive the engine bytes from a built locking script (the
+    # `@stas3_base_template_hex` module attribute is private to the builder).
+    setup do
+      owner = :binary.copy(<<0x00>>, 20)
+      redemption = :binary.copy(<<0x00>>, 20)
+
+      {:ok, script} =
+        Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, false, [], [])
+
+      bin = BSV.Script.to_binary(script)
+      {:ok, %{script_bin: bin}}
+    end
+
+    test "HALF_N appears verbatim", %{script_bin: bin} do
+      half_n =
+        <<0x41, 0x41, 0x36, 0xD0, 0x8C, 0x5E, 0xD2, 0xBF, 0x3B, 0xA0, 0x48, 0xAF, 0xE6, 0xDC,
+          0xAE, 0xBA, 0xFE>>
+
+      assert :binary.match(bin, half_n) != :nomatch
+    end
+
+    test "PUBKEY_A appears verbatim (spec §12)", %{script_bin: bin} do
+      {:ok, pubkey_a} =
+        Base.decode16("038ff83d8cf12121491609c4939dc11c4aa35503508fe432dc5a5c1905608b9218",
+          case: :mixed
+        )
+
+      assert :binary.match(bin, pubkey_a) != :nomatch
+    end
+
+    test "PUBKEY_B appears verbatim (spec §12)", %{script_bin: bin} do
+      {:ok, pubkey_b} =
+        Base.decode16("023635954789a02e39fb7e54440b6f528d53efd65635ddad7f3c4085f97fdbdc48",
+          case: :mixed
+        )
+
+      assert :binary.match(bin, pubkey_b) != :nomatch
+    end
+
+    test "SIG_PREFIX_DER hex-stream contains b16f8179 (NOT b160)", %{script_bin: bin} do
+      # Per spec §12, SIG_PREFIX_DER carries r = Gx, whose hex-stream
+      # contains the substring `b16f8179` (within the 32-byte r-INTEGER
+      # `79be...5b16f81798`). The known-bad mutation `b160` in the same
+      # window would corrupt the synthesised signature for the ECDSA-trick.
+      hex = Base.encode16(bin, case: :lower)
+
+      # Whole prefix substring (38 bytes / 76 hex chars) verbatim.
+      assert hex =~
+               "3044022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980220"
+
+      # Specifically the `b16f8179` sub-window must be present.
+      assert hex =~ "b16f8179"
+
+      # And the buggy mutation `b160` must NOT appear inside r — i.e.
+      # the literal sub-window starting `b16` is followed by `f8`, not `0`.
+      bad_window = "5b160"
+      refute hex =~ bad_window
+    end
+  end
 end

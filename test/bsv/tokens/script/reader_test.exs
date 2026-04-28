@@ -165,6 +165,32 @@ defmodule BSV.Tokens.Script.ReaderTest do
     refute Reader.arbitrator_free_owner?(BSV.Script.to_binary(script))
   end
 
+  # STAS 3.0 v0.1 §10.2 — positive P2MPKH classification.
+  # Round-trip the canonical 70-byte P2MPKH locking script through the reader
+  # and assert it is classified as `:p2mpkh`.
+  test "classify P2MPKH (STAS 3.0 v0.1 §10.2 fixed 70-byte body)" do
+    mpkh = :binary.copy(<<0xAB>>, 20)
+    bin = BSV.Tokens.Script.Templates.p2mpkh_locking_script(mpkh)
+    assert byte_size(bin) == 70
+
+    parsed = Reader.read_locking_script(bin)
+    assert parsed.script_type == :p2mpkh
+    assert parsed.stas == nil
+    assert parsed.stas3 == nil
+  end
+
+  test "classify P2MPKH for a real 3-of-5 redeem buffer's MPKH" do
+    pk = fn b -> <<0x02, :binary.copy(<<b>>, 32)::binary>> end
+    pubs = [pk.(0x01), pk.(0x02), pk.(0x03), pk.(0x04), pk.(0x05)]
+    {:ok, ms} = BSV.Transaction.P2MPKH.new_multisig(3, pubs)
+
+    mpkh = BSV.Transaction.P2MPKH.mpkh(ms)
+    bin = BSV.Tokens.Script.Templates.p2mpkh_locking_script(mpkh)
+
+    parsed = Reader.read_locking_script(bin)
+    assert parsed.script_type == :p2mpkh
+  end
+
   test "arbitrator_free_owner? false for non-STAS3 inputs" do
     refute Reader.arbitrator_free_owner?(
              <<0x76, 0xA9, 0x14>> <> :binary.copy(<<0xAA>>, 20) <> <<0x88, 0xAC>>

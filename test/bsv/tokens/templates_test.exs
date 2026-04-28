@@ -97,4 +97,81 @@ defmodule BSV.Tokens.Script.TemplatesTest do
                "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"
     end
   end
+
+  # ── STAS 3.0 v0.1 §10.2 single-sig MPKH spend path ────────────────────
+  #
+  # Spec quote: "Single-sig spend path is taken when the supplied 'pubkey' is
+  # exactly 33 bytes (size 0x21), making individual spends from an MPKH
+  # address indistinguishable on-chain from a normal P2PKH spend."
+  #
+  # When MPKH = HASH160(pubkey) for a specific 33-byte pubkey, the 70-byte
+  # locking script's `OP_SIZE 0x21 OP_EQUAL OP_IF OP_CHECKSIG` branch fires
+  # and the spend looks like a regular P2PKH spend on the wire.
+  describe "single-sig MPKH spend path (§10.2)" do
+    alias BSV.{PrivateKey, PublicKey}
+    alias BSV.Transaction.P2PKH
+    alias BSV.Tokens.Script.Templates, as: Tmpls
+
+    test "MPKH = HASH160(pubkey) yields a 70-byte locking script" do
+      key = PrivateKey.generate()
+      pubkey_bytes = key |> PrivateKey.to_public_key() |> PublicKey.compress() |> Map.get(:point)
+      assert byte_size(pubkey_bytes) == 33
+
+      mpkh = Crypto.hash160(pubkey_bytes)
+      bin = Tmpls.p2mpkh_locking_script(mpkh)
+
+      assert byte_size(bin) == 70
+      <<_::binary-size(3), embedded::binary-size(20), _::binary>> = bin
+      assert embedded == mpkh
+    end
+
+    test "leading 23 bytes of MPKH body match the canonical P2PKH gate" do
+      # The MPKH 70-byte body and a plain 25-byte P2PKH share a common
+      # 23-byte prefix `OP_DUP OP_HASH160 OP_DATA_20 <PKH:20>` when MPKH
+      # equals HASH160(pubkey). On-chain a wallet observing only the gate
+      # cannot distinguish the two leading-region byte runs.
+      key = PrivateKey.generate()
+      pubkey_bytes = key |> PrivateKey.to_public_key() |> PublicKey.compress() |> Map.get(:point)
+      pkh = Crypto.hash160(pubkey_bytes)
+
+      p2pkh_bin = <<0x76, 0xA9, 0x14, pkh::binary, 0x88, 0xAC>>
+      mpkh_bin = Tmpls.p2mpkh_locking_script(pkh)
+
+      assert binary_part(p2pkh_bin, 0, 23) == binary_part(mpkh_bin, 0, 23)
+    end
+
+    test "P2PKH unlocker (<sig> <33B pubkey>) signs against an MPKH-locked UTXO" do
+      # Build a transaction whose source_output uses the canonical 70-byte
+      # MPKH locking script for `pkh = HASH160(pubkey)`, sign it with a
+      # plain P2PKH unlocker, and verify the result is `<sig> <33B pubkey>` —
+      # bit-for-bit indistinguishable from a normal P2PKH spend.
+      key = PrivateKey.generate()
+      pubkey_bytes = key |> PrivateKey.to_public_key() |> PublicKey.compress() |> Map.get(:point)
+      pkh = Crypto.hash160(pubkey_bytes)
+
+      mpkh_bin = Tmpls.p2mpkh_locking_script(pkh)
+      {:ok, mpkh_script} = BSV.Script.from_binary(mpkh_bin)
+
+      input = %BSV.Transaction.Input{
+        source_txid: :crypto.strong_rand_bytes(32),
+        source_tx_out_index: 0,
+        source_output: %BSV.Transaction.Output{
+          satoshis: 5000,
+          locking_script: mpkh_script
+        },
+        unlocking_script: BSV.Script.new()
+      }
+
+      tx = %BSV.Transaction{inputs: [input], outputs: [], version: 1, lock_time: 0}
+
+      unlocker = P2PKH.unlock(key)
+      assert {:ok, %BSV.Script{chunks: chunks}} = P2PKH.sign(unlocker, tx, 0)
+
+      assert [{:data, sig}, {:data, embedded_pubkey}] = chunks
+      assert byte_size(embedded_pubkey) == 33
+      assert embedded_pubkey == pubkey_bytes
+      assert byte_size(sig) >= 70
+      assert :binary.last(sig) == 0x41
+    end
+  end
 end

@@ -13,6 +13,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Tokens.Error
   alias BSV.Tokens.SigningKey
   alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates}
+  alias BSV.Tokens.Stas3.Validate, as: Stas3Validate
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
 
   # ---- Config types ----
@@ -405,28 +406,47 @@ defmodule BSV.Tokens.Factory.Stas3 do
     end
   end
 
-  @doc "Build a STAS3 freeze transaction."
+  @doc """
+  Build a STAS3 freeze transaction.
+
+  Per spec §9.2 (enforced before signing via `BSV.Tokens.Stas3.Validate.freeze/2`):
+
+    * exactly one destination (a single STAS output),
+    * `owner_pkh` and `redemption_pkh` byte-identical to the input,
+    * the input's `flags` field has the FREEZABLE bit set.
+
+  Returns `{:error, :freeze_output_count}`, `{:error, :freeze_field_drift}`,
+  or `{:error, :freeze_flag_not_set}` on validation failure.
+  """
   @spec build_stas3_freeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_freeze_tx(config) do
     frozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: true} end)
 
-    build_stas3_base_tx(%{
-      config
-      | spend_type: :freeze_unfreeze,
-        destinations: frozen_dests
-    })
+    with :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
+      build_stas3_base_tx(%{
+        config
+        | spend_type: :freeze_unfreeze,
+          destinations: frozen_dests
+      })
+    end
   end
 
-  @doc "Build a STAS3 unfreeze transaction."
+  @doc """
+  Build a STAS3 unfreeze transaction.
+
+  Same §9.2 constraints as `build_stas3_freeze_tx/1`.
+  """
   @spec build_stas3_unfreeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_unfreeze_tx(config) do
     unfrozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: false} end)
 
-    build_stas3_base_tx(%{
-      config
-      | spend_type: :freeze_unfreeze,
-        destinations: unfrozen_dests
-    })
+    with :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
+      build_stas3_base_tx(%{
+        config
+        | spend_type: :freeze_unfreeze,
+          destinations: unfrozen_dests
+      })
+    end
   end
 
   @doc """
@@ -493,21 +513,54 @@ defmodule BSV.Tokens.Factory.Stas3 do
   @doc """
   Build a STAS3 confiscation transaction.
 
-  Confiscates token UTXOs using spending type 3 (confiscation authority path).
-  Frozen inputs CAN be confiscated. The scheme must have confiscation enabled
-  and service fields must include the confiscation authority.
+  Per spec §9.3 (enforced before signing via
+  `BSV.Tokens.Stas3.Validate.confiscation/1`):
 
-  ## Parameters
-    * `config` - A `base_config()` map. The spend_type will be overridden
-      to `:confiscation`.
+    * the input's `flags` field has the CONFISCATABLE bit set,
+    * frozen inputs CAN be confiscated (spec §9.6: confiscation has the
+      highest precedence and is permitted to override freeze).
 
-  ## Returns
-    * `{:ok, transaction}` on success
-    * `{:error, reason}` on validation failure
+  Returns `{:error, :confiscate_flag_not_set}` if the flag is missing.
+
+  Spec §9.6 precedence (informative — independent factories choose intent):
+  Confiscation > Freeze > Swap > Regular spend.
   """
   @spec build_stas3_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_confiscate_tx(config) do
-    build_stas3_base_tx(%{config | spend_type: :confiscation})
+    with :ok <- validate_all(config.token_inputs, &Stas3Validate.confiscation/1) do
+      build_stas3_base_tx(%{config | spend_type: :confiscation})
+    end
+  end
+
+  @doc """
+  Build a STAS3 swap-cancellation transaction (spec §9.4).
+
+  Cancels a standing swap offer by spending the maker's swap-descriptor
+  UTXO back to its `var2.receiveAddr` owner. Constraints (enforced via
+  `BSV.Tokens.Stas3.Validate.swap_cancel/2`):
+
+    * exactly 1 token input whose `var2` is a swap descriptor (action 0x01),
+    * exactly 1 destination,
+    * destination's `owner_pkh` equals the input's `var2.receiveAddr`.
+
+  The unlocking script uses spendType = 4. Authorisation against
+  `receiveAddr` is enforced by the engine at spend time.
+
+  Returns `{:error, :swap_cancel_missing_descriptor}`,
+  `{:error, :swap_cancel_output_count}`, or
+  `{:error, :swap_cancel_owner_mismatch}` on validation failure.
+  """
+  @spec build_stas3_swap_cancel_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_swap_cancel_tx(config) do
+    cond do
+      length(config.token_inputs) != 1 ->
+        {:error, Error.invalid_destination("swap cancellation requires exactly 1 token input")}
+
+      true ->
+        with :ok <- Stas3Validate.swap_cancel(hd(config.token_inputs), config.destinations) do
+          build_stas3_base_tx(%{config | spend_type: :swap_cancellation})
+        end
+    end
   end
 
   @doc """
@@ -790,6 +843,16 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
         error ->
           {:halt, error}
+      end
+    end)
+  end
+
+  # Run a per-input validator across every token input; halt on first failure.
+  defp validate_all(token_inputs, validator) when is_function(validator, 1) do
+    Enum.reduce_while(token_inputs, :ok, fn ti, :ok ->
+      case validator.(ti) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
       end
     end)
   end
