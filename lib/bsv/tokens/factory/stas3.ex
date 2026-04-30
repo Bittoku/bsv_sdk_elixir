@@ -802,6 +802,165 @@ defmodule BSV.Tokens.Factory.Stas3 do
   end
 
   @doc """
+  Build a STAS3 swap-swap transaction with the spec §9.5 trailing
+  `<counterparty_script> <piece_count> <piece_array>` block auto-wired
+  into BOTH inputs' unlocking scripts.
+
+  Use this entry point when the resulting tx must satisfy engine-level
+  verification — i.e. an actual on-chain spend rather than a witness
+  shape test. For each input `i`, the appended trailing block contains:
+
+    * `counterparty_script` — the OTHER input's locking script (raw bytes).
+    * `piece_count` — derived from `pieces[i]` (number of pieces produced
+      from `preceding_tx` after excising the asset script at
+      `asset_output_index`).
+    * `piece_array` — reverse-ordered, length-prefixed (1-byte length, then
+      body) — matching the engine ASM's `OP_1 OP_SPLIT OP_IFDUP OP_IF
+      OP_SWAP OP_SPLIT OP_ENDIF` consumption pattern.
+
+  `pieces` MUST be a list of EXACTLY 2 maps, each with `:preceding_tx`
+  (binary) and `:asset_output_index` (non-negative integer) keys.
+
+  Mirrors `bsv-sdk-rust::build_stas3_swap_swap_tx_with_pieces/2`.
+
+  Returns `{:error, reason}` for the same input-shape failures as
+  `build_stas3_swap_swap_tx/1` (frozen inputs, wrong count) plus piece
+  encoding errors propagated from `Stas3Pieces`.
+  """
+  @spec build_stas3_swap_swap_tx_with_pieces(
+          base_config(),
+          [%{required(:preceding_tx) => binary(), required(:asset_output_index) => non_neg_integer()}]
+        ) :: {:ok, Transaction.t()} | {:error, term()}
+  def build_stas3_swap_swap_tx_with_pieces(config, pieces)
+      when is_list(pieces) and length(pieces) == 2 do
+    with {:ok, tx} <- build_stas3_swap_swap_tx(config) do
+      append_swap_trailing_pieces(tx, config.token_inputs, pieces)
+    end
+  end
+
+  def build_stas3_swap_swap_tx_with_pieces(_config, _pieces),
+    do: {:error, Error.invalid_destination("swap-swap with pieces requires exactly 2 piece params")}
+
+  # Append the spec §9.5 trailing block to BOTH STAS inputs' unlocking
+  # scripts. For input i (0 or 1), the counterparty is input (1 - i).
+  defp append_swap_trailing_pieces(tx, token_inputs, pieces) do
+    Enum.reduce_while(0..1, {:ok, tx}, fn i, {:ok, acc_tx} ->
+      counterparty_script_bin =
+        token_inputs
+        |> Enum.at(1 - i)
+        |> Map.fetch!(:locking_script)
+        |> Script.to_binary()
+
+      piece_param = Enum.at(pieces, i)
+      preceding_tx = Map.fetch!(piece_param, :preceding_tx)
+      asset_idx = Map.fetch!(piece_param, :asset_output_index)
+
+      with {:ok, trailing_bytes} <-
+             Stas3Pieces.encode_atomic_swap_pieces(
+               counterparty_script_bin,
+               preceding_tx,
+               [asset_idx]
+             ),
+           {:ok, trailing_pushes} <-
+             trailing_to_pushes(trailing_bytes, byte_size(counterparty_script_bin)),
+           {:ok, updated_tx} <-
+             splice_trailing_into_input(acc_tx, i, trailing_pushes) do
+        {:cont, {:ok, updated_tx}}
+      else
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # Decompose the encoder's raw output `cp_push ‖ count_byte ‖ piece_array`
+  # into THREE separate Bitcoin pushdata items: counterparty_script,
+  # piece_count (1 byte), and the length-prefixed piece_array. The encoder
+  # already returns counterparty_script wrapped in pushdata framing; we
+  # strip it back to raw bytes via the known prefix length, then re-push.
+  defp trailing_to_pushes(trailing_bytes, cp_len) do
+    # The encoder framing for counterparty_script is:
+    #   * 1B push opcode (≤ 0x4B for ≤75B) OR
+    #   * 0x4C + 1B length (76-255B) OR
+    #   * 0x4D + 2B LE length (256-65535B) etc.
+    # We reverse this to recover the raw counterparty bytes, the
+    # piece_count byte, and the piece_array body.
+    case strip_counterparty_push(trailing_bytes, cp_len) do
+      {:ok, cp_bytes, <<piece_count::8, piece_array::binary>>} ->
+        cp_push = push_data(cp_bytes)
+        count_push = push_data(<<piece_count>>)
+        array_push = push_data(piece_array)
+        {:ok, cp_push <> count_push <> array_push}
+
+      {:ok, _cp_bytes, _} ->
+        {:error, :invalid_trailing_block}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp strip_counterparty_push(<<0x00, rest::binary>>, 0), do: {:ok, <<>>, rest}
+
+  defp strip_counterparty_push(<<len, rest::binary>>, cp_len)
+       when len >= 0x01 and len <= 0x4B and len == cp_len do
+    <<cp::binary-size(cp_len), tail::binary>> = rest
+    {:ok, cp, tail}
+  end
+
+  defp strip_counterparty_push(<<0x4C, len, rest::binary>>, cp_len) when len == cp_len do
+    <<cp::binary-size(cp_len), tail::binary>> = rest
+    {:ok, cp, tail}
+  end
+
+  defp strip_counterparty_push(<<0x4D, len::little-16, rest::binary>>, cp_len) when len == cp_len do
+    <<cp::binary-size(cp_len), tail::binary>> = rest
+    {:ok, cp, tail}
+  end
+
+  defp strip_counterparty_push(<<0x4E, len::little-32, rest::binary>>, cp_len) when len == cp_len do
+    <<cp::binary-size(cp_len), tail::binary>> = rest
+    {:ok, cp, tail}
+  end
+
+  defp strip_counterparty_push(_, _), do: {:error, :invalid_trailing_block}
+
+  # Bitcoin pushdata framing — same conventions as
+  # Stas3Builder.push_data/1 / Stas3Pieces.pushdata/1.
+  defp push_data(<<>>), do: <<0x00>>
+
+  defp push_data(data) when byte_size(data) <= 75,
+    do: <<byte_size(data)::8, data::binary>>
+
+  defp push_data(data) when byte_size(data) <= 255,
+    do: <<0x4C, byte_size(data)::8, data::binary>>
+
+  defp push_data(data) when byte_size(data) <= 0xFFFF,
+    do: <<0x4D, byte_size(data)::little-16, data::binary>>
+
+  defp push_data(data),
+    do: <<0x4E, byte_size(data)::little-32, data::binary>>
+
+  defp splice_trailing_into_input(tx, input_index, trailing_bytes) do
+    input = Enum.at(tx.inputs, input_index)
+
+    case input.unlocking_script do
+      %Script{} = existing ->
+        combined_bin = Script.to_binary(existing) <> trailing_bytes
+
+        case Script.from_binary(combined_bin) do
+          {:ok, %Script{} = combined} ->
+            {:ok, set_unlocking_script(tx, input_index, combined)}
+
+          {:error, _} = err ->
+            err
+        end
+
+      _ ->
+        {:error, :missing_unlocking_script}
+    end
+  end
+
+  @doc """
   Build a STAS3 swap flow transaction with auto-detected mode.
 
   Reads each input's locking script to detect swap action data:

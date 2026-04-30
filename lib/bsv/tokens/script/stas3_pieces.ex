@@ -12,21 +12,28 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
       # txType = 1 (atomic swap)
       counterparty_locking_script  ←  full locking script of the OTHER party's STAS UTXO
       piece_count                   ←  1-byte unsigned integer
-      piece_array                   ←  pieces, SPACE-delimited (0x20)
+      piece_array                   ←  pieces, each LENGTH-PREFIXED (1-byte u8 length, then bytes)
 
       # txType = 2..7 (merge)
       piece_count                   ←  1-byte unsigned integer; value MUST equal txType
-      piece_array                   ←  pieces, SPACE-delimited (0x20)
+      piece_array                   ←  pieces, each LENGTH-PREFIXED (1-byte u8 length, then bytes)
 
   ## What "pieces" are (spec §9.5)
 
-  Quoting the spec verbatim:
+  The spec §9.5 wording — "the reverse-ordered array of pieces is
+  delimited by space (' ') character" — is misleading: the engine ASM is
+  the source of truth. The engine ASM repeats this atom to consume the
+  piece array:
 
-  > "The reverse-ordered array of pieces that remain after excising the
-  > counterparty asset script from its preceding transaction. The excised
-  > script constitutes all the token data right after the two variable
-  > parameters at the very start of the STAS script. The reverse-ordered
-  > array of pieces is delimited by space (' ') character."
+      OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP OP_SPLIT OP_ENDIF
+
+  which reads each piece as **length-prefixed** — 1 byte off as the piece
+  length, then that many bytes off as the piece body. A `0x20`-separator
+  encoding desynchronises the loop and leaves residual bytes that the
+  engine eventually mis-uses as a script-number, producing an OP_VERIFY
+  or InvalidStackOperation failure. Both Rust and Elixir SDKs originally
+  implemented the encoder as space-delimited based on the spec wording;
+  this module now matches the engine.
 
   Concretely, given the preceding transaction (the tx that produced the
   swap input UTXO):
@@ -42,7 +49,10 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
      the first excised region, one between each pair of adjacent
      excised regions, and one after the last.
   3. Reverse the piece order.
-  4. Join the reversed pieces with single `0x20` (space) bytes.
+  4. Concatenate the reversed pieces, each prefixed by a 1-byte length.
+
+  Each piece MUST fit in a u8 (≤ 255 bytes); larger pieces cause the
+  encoder to return `{:error, :invalid_piece}`.
 
   This module exposes:
 
@@ -57,7 +67,6 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   back is unambiguous).
   """
 
-  @space 0x20
   @engine_prefix <<0x6D, 0x82, 0x73, 0x63>>
 
   @typedoc "Result of `parse/2` for a swap trailing block."
@@ -85,7 +94,7 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
 
       counterparty_script_push  ‖  piece_count_byte  ‖  piece_array
 
-  where `piece_array` is the reverse-ordered, space-delimited result of
+  where `piece_array` is the reverse-ordered, length-prefixed result of
   excising every named asset script from `preceding_tx`.
 
   `asset_output_indices` MUST list at least one valid output index in
@@ -96,15 +105,15 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   def encode_atomic_swap_pieces(counterparty_locking_script, preceding_tx, asset_output_indices)
       when is_binary(counterparty_locking_script) and is_binary(preceding_tx) and
              is_list(asset_output_indices) do
-    with {:ok, pieces} <-
-           build_pieces_from_tx(preceding_tx, asset_output_indices) do
+    with {:ok, pieces} <- build_pieces_from_tx(preceding_tx, asset_output_indices),
+         {:ok, joined} <- join_pieces(pieces) do
       cp_push = pushdata(counterparty_locking_script)
       count = length(pieces)
 
       if count > 255 do
         {:error, {:piece_count_overflow, count}}
       else
-        body = <<cp_push::binary, count::8, join_pieces(pieces)::binary>>
+        body = <<cp_push::binary, count::8, joined::binary>>
         {:ok, body}
       end
     end
@@ -143,12 +152,12 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
         {:error, {:piece_count_mismatch, piece_count, length(asset_output_indices)}}
 
       true ->
-        with {:ok, pieces} <-
-               build_pieces_from_tx(preceding_tx, asset_output_indices) do
+        with {:ok, pieces} <- build_pieces_from_tx(preceding_tx, asset_output_indices),
+             {:ok, joined} <- join_pieces(pieces) do
           if length(pieces) != piece_count do
             {:error, {:piece_count_mismatch, piece_count, length(pieces)}}
           else
-            body = <<piece_count::8, join_pieces(pieces)::binary>>
+            body = <<piece_count::8, joined::binary>>
             {:ok, body}
           end
         end
@@ -168,12 +177,12 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   `tx_type` selects the layout:
 
     * `1`     — atomic swap: leading pushdata-framed counterparty script,
-                then 1-byte count, then space-delimited piece array.
+                then 1-byte count, then length-prefixed piece array.
                 Returns `{:ok, %{counterparty_script: _, piece_count: _,
                 pieces: _}}`.
 
     * `2..7`  — merge: 1-byte count (must equal `tx_type`), then
-                space-delimited piece array. Returns `{:ok, %{piece_count:
+                length-prefixed piece array. Returns `{:ok, %{piece_count:
                 _, pieces: _}}`.
 
   On malformed input — bad framing, count mismatch with array length,
@@ -368,35 +377,44 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
 
   defp read_pushdata(_), do: :error
 
-  # Join pieces with a single 0x20 separator BETWEEN consecutive pieces.
-  defp join_pieces([]), do: <<>>
-  defp join_pieces([single]), do: single
+  # Concatenate pieces, each prefixed by a 1-byte length. The engine ASM
+  # consumes the array via repeated `OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP
+  # OP_SPLIT OP_ENDIF` atoms, which interpret each piece as length-prefixed
+  # (1-byte length, then that many bytes). Each piece MUST fit in a u8.
+  defp join_pieces(pieces) do
+    Enum.reduce_while(pieces, {:ok, <<>>}, fn piece, {:ok, acc} ->
+      size = byte_size(piece)
 
-  defp join_pieces([head | tail]),
-    do: Enum.reduce(tail, head, fn piece, acc -> <<acc::binary, @space, piece::binary>> end)
+      if size > 255 do
+        {:halt, {:error, :invalid_piece}}
+      else
+        {:cont, {:ok, <<acc::binary, size::8, piece::binary>>}}
+      end
+    end)
+  end
 
-  # Split a joined byte run into exactly `expected_count` pieces, splitting
-  # on every 0x20 byte. Empty pieces are allowed (two consecutive 0x20
-  # bytes → empty middle piece).
+  # Split a length-prefixed piece-array body into exactly `expected_count`
+  # pieces. For each iteration: read 1 byte as the length, take that many
+  # bytes as the piece body. The buffer MUST be exactly consumed.
   @doc false
   @spec split_pieces(binary(), non_neg_integer()) ::
           {:ok, [binary()]} | {:error, term()}
   def split_pieces(_array, 0), do: {:error, :zero_piece_count}
 
   def split_pieces(array, expected_count) when is_binary(array) do
-    pieces =
-      if expected_count == 1 do
-        [array]
-      else
-        :binary.split(array, <<@space>>, [:global])
-      end
-
-    cond do
-      length(pieces) == expected_count ->
-        {:ok, pieces}
-
-      true ->
-        {:error, {:piece_array_length_mismatch, expected_count, length(pieces)}}
+    case do_split_pieces(array, expected_count, []) do
+      {:ok, pieces} -> {:ok, pieces}
+      {:error, _} = err -> err
     end
   end
+
+  defp do_split_pieces(<<>>, 0, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp do_split_pieces(_rest, 0, _acc),
+    do: {:error, :piece_array_trailing_bytes}
+
+  defp do_split_pieces(<<len::8, piece::binary-size(len), rest::binary>>, n, acc),
+    do: do_split_pieces(rest, n - 1, [piece | acc])
+
+  defp do_split_pieces(_rest, _n, _acc), do: {:error, :invalid_piece_array_framing}
 end

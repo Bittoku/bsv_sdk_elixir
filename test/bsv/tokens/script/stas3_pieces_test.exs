@@ -10,8 +10,9 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       block has the expected hex (snapshot).
     * Round-trip via `parse/2`.
     * Cover edge cases: zero asset outputs, piece-count mismatch on parse,
-      empty piece (two consecutive 0x20 bytes), counterparty-script length
-      variations.
+      counterparty-script length variations, and the engine-driven
+      length-prefixed piece encoding (1-byte length per piece, no
+      separators) — see `piece_array is length-prefixed not separator-delimited`.
   """
   use ExUnit.Case, async: true
 
@@ -22,7 +23,7 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
   @asset_tail @engine <> <<0xAA, 0xBB, 0xCC, 0xDD, 0xEE>>
 
   describe "atomic-swap (txType=1) encoding" do
-    test "single asset output → 2 pieces (before + after) joined by 0x20" do
+    test "single asset output → 2 pieces (each length-prefixed)" do
       tx = synthetic_tx_with_outputs([asset_output()])
 
       counterparty = <<0xCC, 0xDD>>
@@ -44,8 +45,8 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
       assert length(pieces) == 2
 
-      # The two pieces, joined by a single 0x20, MUST equal the array
-      # body (i.e. the join is exact and reversible).
+      # The two pieces, each prefixed by a 1-byte length, MUST equal the
+      # array body (i.e. the join is exact and reversible).
       assert array == join(pieces)
     end
 
@@ -60,8 +61,8 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       assert {:ok, %{piece_count: 3, pieces: pieces}} = Stas3Pieces.parse(body, 1)
       assert length(pieces) == 3
 
-      # The 3 pieces must concatenate (with single-space joiners) to the
-      # tx bytes minus the two excised regions.
+      # The 3 pieces, each length-prefixed, must concatenate to the
+      # array body produced by the encoder.
       assert join(pieces) == tx_minus_excised(tx, [0, 2])
     end
 
@@ -94,6 +95,54 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
       # Pinned: pushdata(<<0xab, 0xcd, 0xef>>) = 03 ab cd ef ; count = 0x02
       assert String.starts_with?(hex, "03abcdef02")
+    end
+
+    test "piece_array is length-prefixed not separator-delimited" do
+      # Hand-build a 2-piece reverse-ordered array {"AB", "CD"} via the
+      # encoder by constructing a preceding tx whose only asset script's
+      # excision produces those two pieces. Easier: directly invoke the
+      # internal join via the public encoder by crafting a tx where the
+      # before/after slices are exactly "AB" and "CD".
+      #
+      # Simpler still: use Stas3Pieces.split_pieces/2 round-trip to assert
+      # the encoded layout. The encoder's join is private, but the
+      # behaviour is observable via the encoded body of any successful
+      # encode_atomic_swap_pieces call: the array bytes are exactly
+      # `<<len_a::8, a::binary, len_b::8, b::binary>>` with NO separators.
+      #
+      # Build: counterparty = <<>>, tx with one asset output crafted so
+      # the two resulting pieces are precisely "AB" and "CD" (in reverse
+      # order — the `tail` piece comes first, the `before` piece comes
+      # second). We construct the tx by hand.
+      #
+      # An easier and more direct assertion: parse a hand-rolled
+      # length-prefixed body and confirm it round-trips to ["AB", "CD"].
+      array = <<0x02, 0x41, 0x42, 0x02, 0x43, 0x44>>
+      body = <<0x00, 0x02, array::binary>>
+
+      assert {:ok, %{counterparty_script: <<>>, piece_count: 2, pieces: ["AB", "CD"]}} =
+               Stas3Pieces.parse(body, 1)
+
+      # And the reverse: directly invoke split_pieces/2 to confirm the
+      # array layout is byte-exact.
+      assert {:ok, ["AB", "CD"]} = Stas3Pieces.split_pieces(array, 2)
+    end
+
+    test "piece array rejects piece over 255 bytes" do
+      # Build a synthetic tx whose excision produces a "before" piece of
+      # 256 bytes (which the encoder MUST reject because piece length
+      # cannot fit in a u8).
+      #
+      # We craft the tx so that the bytes BEFORE the asset script in
+      # output 0 are >= 256 in size. Adding extra inputs/outputs is the
+      # easiest way to push the asset script past byte 256.
+      padding_dust = <<0x76, 0xA9>> <> :binary.copy(<<0xAA>>, 256) <> <<0x88, 0xAC>>
+
+      # outputs: [dust(big), asset]
+      tx = synthetic_tx_with_outputs([padding_dust, asset_output()])
+
+      assert {:error, :invalid_piece} =
+               Stas3Pieces.encode_atomic_swap_pieces(<<0x01>>, tx, [1])
     end
   end
 
@@ -161,8 +210,6 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       hex = Base.encode16(body, case: :lower)
       # Leading byte must be the piece count (0x02).
       assert String.starts_with?(hex, "02")
-      # Body must contain at least one 0x20 separator.
-      assert String.contains?(hex, "20")
     end
   end
 
@@ -189,11 +236,13 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
   end
 
   describe "parse-time validation" do
-    test "parse rejects piece_count mismatch on merge" do
-      # Hand-craft a body claiming count=3 but containing 2 pieces.
-      malformed = <<0x03, "aa", 0x20, "bb">>
+    test "parse rejects piece_count mismatch on merge (truncated array)" do
+      # Hand-craft a body claiming count=3 but only encoding 2 pieces in
+      # length-prefixed form: 0x02 "aa" 0x02 "bb" — third length read
+      # would fall off the end.
+      malformed = <<0x03, 0x02, "aa", 0x02, "bb">>
 
-      assert {:error, {:piece_array_length_mismatch, 3, 2}} =
+      assert {:error, :invalid_piece_array_framing} =
                Stas3Pieces.parse(malformed, 3)
     end
 
@@ -201,9 +250,9 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       assert {:error, {:unsupported_tx_type, 9}} = Stas3Pieces.parse(<<>>, 9)
     end
 
-    test "empty piece (two consecutive 0x20 bytes) round-trips" do
-      # array = "aa" 0x20 0x20 "bb" → 3 pieces: "aa", "", "bb"
-      array = <<"aa", 0x20, 0x20, "bb">>
+    test "empty piece (zero-length entry) round-trips" do
+      # array = 0x02 "aa" 0x00 0x02 "bb" → 3 pieces: "aa", "", "bb"
+      array = <<0x02, "aa", 0x00, 0x02, "bb">>
       body = <<0x03, array::binary>>
 
       assert {:ok, %{piece_count: 3, pieces: ["aa", "", "bb"]}} =
@@ -258,18 +307,19 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
   defp dust_output, do: <<0x76, 0xA9, 0x14>> <> :binary.copy(<<0x88>>, 20) <> <<0x88, 0xAC>>
 
-  # Compute the bytes of `tx` minus the excised asset-script regions for
-  # the named outputs, joined with 0x20 (matches encoder semantics).
+  # Compute the length-prefixed piece-array body produced by the encoder
+  # for the named outputs (matches encoder semantics).
   defp tx_minus_excised(tx, indices) do
     {:ok, pieces} = Stas3Pieces.build_pieces_from_tx(tx, indices)
     join(pieces)
   end
 
-  defp join([]), do: <<>>
-  defp join([only]), do: only
-
-  defp join([head | tail]),
-    do: Enum.reduce(tail, head, fn p, acc -> acc <> <<0x20>> <> p end)
+  # Length-prefixed join, mirroring Stas3Pieces' internal `join_pieces/1`.
+  defp join(pieces) do
+    Enum.reduce(pieces, <<>>, fn piece, acc ->
+      <<acc::binary, byte_size(piece)::8, piece::binary>>
+    end)
+  end
 
   # Mirror Stas3Pieces' internal pushdata for the snapshot reencode test.
   defp pushdata(<<>>), do: <<0x00>>
