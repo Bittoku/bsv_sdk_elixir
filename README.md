@@ -20,7 +20,7 @@ Add to your `mix.exs`:
 
 ```elixir
 def deps do
-  [{:bsv_sdk, "~> 0.1.0"}]
+  [{:bsv_sdk, "~> 1.5"}]
 end
 ```
 

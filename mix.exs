@@ -4,11 +4,12 @@ defmodule BSV.MixProject do
   def project do
     [
       app: :bsv_sdk,
-      version: "1.4.0",
+      version: "1.5.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      description: "Feature-complete Bitcoin SV SDK for Elixir — primitives, scripts, transactions, wallet, tokens (STAS/STAS 3.0), SPV, and transport clients.",
+      description:
+        "Feature-complete Bitcoin SV SDK for Elixir — primitives, scripts, transactions, wallet, tokens (STAS/STAS 3.0), SPV, and transport clients.",
       package: package(),
       docs: docs(),
       source_url: "https://github.com/Bittoku/bsv_sdk_elixir",
@@ -40,15 +41,56 @@ defmodule BSV.MixProject do
       main: "BSV",
       extras: ["README.md"],
       groups_for_modules: [
-        "Primitives": [BSV.Crypto, BSV.PrivateKey, BSV.PublicKey, BSV.Base58, BSV.ChainHash, BSV.VarInt, BSV.SymmetricKey],
-        "Script": [BSV.Script, BSV.Script.Address, BSV.Script.Opcodes, BSV.Script.Interpreter, BSV.Script.ScriptNum],
-        "Transaction": [BSV.Transaction, BSV.Transaction.Builder, BSV.Transaction.Input, BSV.Transaction.Output, BSV.Transaction.P2PKH, BSV.Transaction.Sighash, BSV.Transaction.Template],
-        "Wallet": [BSV.Wallet, BSV.Wallet.KeyDeriver, BSV.Wallet.ProtoWallet],
-        "Message": [BSV.Message.Encrypted, BSV.Message.Signed],
-        "Auth": [BSV.Auth.Certificate, BSV.Auth.MasterCertificate, BSV.Auth.VerifiableCertificate, BSV.Auth.Nonce],
-        "SPV": [BSV.SPV.MerklePath, BSV.SPV.Beef, BSV.SPV.MerkleTreeParent],
-        "Tokens": [BSV.Tokens, BSV.Tokens.Scheme, BSV.Tokens.TokenId, BSV.Tokens.Script.Reader, BSV.Tokens.Script.StasBuilder, BSV.Tokens.Script.StasBtgBuilder, BSV.Tokens.Script.Stas3Builder, BSV.Tokens.Factory.Contract, BSV.Tokens.Factory.Stas, BSV.Tokens.Factory.StasBtg, BSV.Tokens.Factory.Stas3, BSV.Tokens.Lineage, BSV.Tokens.Proof],
-        "Transports": [BSV.ARC.Client, BSV.ARC.Config, BSV.JungleBus.Client, BSV.JungleBus.Config]
+        Primitives: [
+          BSV.Crypto,
+          BSV.PrivateKey,
+          BSV.PublicKey,
+          BSV.Base58,
+          BSV.ChainHash,
+          BSV.VarInt,
+          BSV.SymmetricKey
+        ],
+        Script: [
+          BSV.Script,
+          BSV.Script.Address,
+          BSV.Script.Opcodes,
+          BSV.Script.Interpreter,
+          BSV.Script.ScriptNum
+        ],
+        Transaction: [
+          BSV.Transaction,
+          BSV.Transaction.Builder,
+          BSV.Transaction.Input,
+          BSV.Transaction.Output,
+          BSV.Transaction.P2PKH,
+          BSV.Transaction.Sighash,
+          BSV.Transaction.Template
+        ],
+        Wallet: [BSV.Wallet, BSV.Wallet.KeyDeriver, BSV.Wallet.ProtoWallet],
+        Message: [BSV.Message.Encrypted, BSV.Message.Signed],
+        Auth: [
+          BSV.Auth.Certificate,
+          BSV.Auth.MasterCertificate,
+          BSV.Auth.VerifiableCertificate,
+          BSV.Auth.Nonce
+        ],
+        SPV: [BSV.SPV.MerklePath, BSV.SPV.Beef, BSV.SPV.MerkleTreeParent],
+        Tokens: [
+          BSV.Tokens,
+          BSV.Tokens.Scheme,
+          BSV.Tokens.TokenId,
+          BSV.Tokens.Script.Reader,
+          BSV.Tokens.Script.StasBuilder,
+          BSV.Tokens.Script.StasBtgBuilder,
+          BSV.Tokens.Script.Stas3Builder,
+          BSV.Tokens.Factory.Contract,
+          BSV.Tokens.Factory.Stas,
+          BSV.Tokens.Factory.StasBtg,
+          BSV.Tokens.Factory.Stas3,
+          BSV.Tokens.Lineage,
+          BSV.Tokens.Proof
+        ],
+        Transports: [BSV.ARC.Client, BSV.ARC.Config, BSV.JungleBus.Client, BSV.JungleBus.Config]
       ]
     ]
   end
