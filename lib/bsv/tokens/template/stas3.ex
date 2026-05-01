@@ -9,6 +9,11 @@ defmodule BSV.Tokens.Template.Stas3 do
     * `spend_type`    — STAS 3.0 v0.1 §8.2 spendType (1..4).
     * `sighash_flag`  — sighash type byte (defaults to 0x41 = ALL+FORKID).
     * `no_auth`       — when `true`, emit OP_FALSE in place of authz (§10.3).
+                        The slot-19 sighashPreimage in the §7 witness is
+                        UNAFFECTED — see `unlock_no_auth/1` for the spec
+                        author's clarification of the word "preimage" in
+                        §10.3 (it refers to the address/MPKH preimage in
+                        the authz slot 21+, not slot 19).
     * `witness`       — optional `BSV.Tokens.Stas3UnlockWitness.t()` carrying
                         slots 1-20 of the spec §7 witness. When present,
                         `sign/3` prepends the witness bytes to the produced
@@ -36,14 +41,36 @@ defmodule BSV.Tokens.Template.Stas3 do
         }
 
   @doc """
-  Create a STAS3 unlocker that emits no signature.
+  Create a STAS3 unlocker that emits no signature (spec §9.5 / §10.3).
 
-  Per STAS 3.0 v0.1 §9.5 / §10.3, when the input UTXO's `owner` field equals
-  `EMPTY_HASH160 = HASH160("")`, the swap engine accepts `OP_FALSE` from that
-  side — no signature/pubkey is required (arbitrator-free swap leg).
+  When the input UTXO's `owner` field equals `EMPTY_HASH160 = HASH160("")`,
+  the swap engine accepts `OP_FALSE` in place of both the signature and the
+  **address/MPKH preimage** (the pubkey for P2PKH or the bare-multisig redeem
+  buffer for P2MPKH whose `HASH160` equals `owner`). The engine skips all
+  ECDSA checks for that party.
 
-  Use this template variant for any STAS 3.0 input whose owner is the empty
-  hash sentinel. The resulting unlocking script is a single `OP_FALSE` push.
+  ## Spec author's clarification of the §10.3 word "preimage"
+
+  The "preimage" the spec talks about in §10.3 is the **address/MPKH
+  preimage** — the data living in the **authz block (§7 unlock witness slot
+  21+)** whose `HASH160` equals the `owner` field. It is NOT the
+  **sighashPreimage** (slot 19), which is a BIP-143 transaction preimage
+  used by the engine's preimage-driven outputs/sighash checks and which
+  MUST remain intact even on the no-auth path.
+
+  Concretely, when this template is paired with `with_witness/2` so the
+  produced unlocking script is `witness ‖ authz` (the normal STAS 3.0 v0.1
+  §7 shape), the result is:
+
+    * slot 19 (`sighashPreimage`) — the real BIP-143 preimage computed via
+      `BSV.Transaction.Sighash.calc_preimage/5`, identical to the P2PKH /
+      P2MPKH paths.
+    * slot 21+ (`authz`) — a single `OP_FALSE` push (`<<0x00>>`) in place
+      of `<sig> <pubkey>` (P2PKH) or `OP_0 <sigs> <redeem>` (P2MPKH).
+
+  Without an attached witness (legacy / unit-test path) the resulting
+  unlocking script is just the bare authz region: a single `OP_FALSE`
+  push.
   """
   @spec unlock_no_auth(BSV.Tokens.Stas3SpendType.t()) :: t()
   def unlock_no_auth(spend_type) do
@@ -112,9 +139,18 @@ defmodule BSV.Tokens.Template.Stas3 do
   @doc "Sign a STAS3 input, producing a P2PKH or P2MPKH unlocking script."
   @impl BSV.Transaction.Template
   def sign(%__MODULE__{no_auth: true} = tpl, _tx, _input_index) do
-    # STAS 3.0 v0.1 §9.5 / §10.3: arbitrator-free swap leg / signature
-    # suppression — push OP_FALSE in place of <sig> (and pubkey/redeem
-    # buffer) for that input.
+    # STAS 3.0 v0.1 §9.5 / §10.3 — arbitrator-free swap leg / signature
+    # suppression. Per the spec author: the "preimage" the spec talks about
+    # in §10.3 is the **address/MPKH preimage** (the pubkey or bare-multisig
+    # redeem buffer in authz slot 21+), NOT the BIP-143 sighashPreimage in
+    # slot 19. The slot-19 sighashPreimage is supplied by the attached
+    # `Stas3UnlockWitness` (computed via `Sighash.calc_preimage/5`) and
+    # MUST remain intact even on the no-auth path — the engine still runs
+    # preimage-driven outputs/sighash checks for this input.
+    #
+    # We therefore emit a single OP_FALSE push for the authz region only;
+    # the witness prefix produced by `finalize_with_witness/2` already
+    # carries the real slot-19 preimage when a witness is attached.
     finalize_with_witness(tpl, %Script{chunks: [{:data, <<>>}]})
   end
 

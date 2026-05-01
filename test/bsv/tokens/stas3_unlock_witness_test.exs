@@ -265,13 +265,20 @@ defmodule BSV.Tokens.Stas3UnlockWitnessTest do
       assert byte_size(combined_bin) > byte_size(witness_bytes)
     end
 
-    test "no_auth template with witness produces witness ‖ OP_FALSE" do
+    test "no_auth template with witness produces witness ‖ OP_FALSE (real slot-19 preimage preserved)" do
       tpl = Stas3Template.unlock_no_auth(:transfer)
+
+      # Per the spec author's §10.3 clarification, the "preimage" replaced
+      # with OP_FALSE is the address/MPKH preimage (authz slot 21+), NOT
+      # the slot-19 sighashPreimage. Use a non-trivial preimage value so a
+      # silent "drop slot 19" regression would surface here as a length /
+      # bytes mismatch.
+      real_preimage = :binary.copy(<<0xAB>>, 200)
 
       witness = %Stas3UnlockWitness{
         stas_outputs: [%{amount: 1, owner_pkh: pkh(0xAA), var2: <<>>}],
         tx_type: :regular,
-        sighash_preimage: <<0x42>>,
+        sighash_preimage: real_preimage,
         spend_type: :transfer
       }
 
@@ -282,7 +289,16 @@ defmodule BSV.Tokens.Stas3UnlockWitnessTest do
       combined_bin = Script.to_binary(combined)
       {:ok, witness_bytes} = Stas3UnlockWitness.to_script_bytes(witness)
 
+      # Authz region = single OP_FALSE push.
       assert combined_bin == witness_bytes <> <<0x00>>
+
+      # Slot 19 inside the witness MUST contain the real preimage bytes
+      # verbatim — re-decode and inspect the chunk layout.
+      {:ok, %Script{chunks: chunks}} = Script.from_binary(combined_bin)
+      [authz_chunk, spend_type_chunk, preimage_chunk | _] = Enum.reverse(chunks)
+      assert authz_chunk == {:data, <<>>}
+      assert spend_type_chunk == {:data, <<0x01>>}
+      assert preimage_chunk == {:data, real_preimage}
     end
 
     test "without witness, sign/3 emits authz only (legacy behaviour preserved)" do

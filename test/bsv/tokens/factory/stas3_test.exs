@@ -1872,14 +1872,52 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     config = make_swap_config(inputs, destinations, fee_key)
     {:ok, tx} = Stas3.build_stas3_transfer_swap_tx(config)
 
-    # Input 0: arbitrator-free → unlock script is `witness ‖ OP_FALSE`. The
-    # final byte is the OP_FALSE marking the no-sig leg per spec §10.3.
+    # Input 0: arbitrator-free → unlock script is `witness ‖ OP_FALSE`.
+    # Per the spec author's clarification of §10.3, the "preimage" replaced
+    # with OP_FALSE is the **address/MPKH preimage** (authz slot 21+),
+    # NOT the BIP-143 sighashPreimage (slot 19) — slot 19 still carries
+    # the real preimage, identical to the P2PKH/P2MPKH paths.
     no_auth_input = Enum.at(tx.inputs, 0)
     no_auth_bin = Script.to_binary(no_auth_input.unlocking_script)
-    assert binary_part(no_auth_bin, byte_size(no_auth_bin) - 1, 1) == <<0x00>>
-    # The witness prefix encodes the spec §7 slots, so the script is much
-    # longer than a bare OP_FALSE.
-    assert byte_size(no_auth_bin) > 1
+
+    # Re-derive the expected witness for input 0 (fee input is at idx 2).
+    # This recomputes slot 19 from the produced tx, so the bytes must match.
+    {:ok, expected_witness} =
+      BSV.Tokens.Factory.Stas3.WitnessBuilder.derive_witness_for_input(
+        tx,
+        0,
+        2,
+        :transfer,
+        :atomic_swap,
+        0x41
+      )
+
+    {:ok, expected_witness_bytes} =
+      BSV.Tokens.Stas3UnlockWitness.to_script_bytes(expected_witness)
+
+    # Slot 21+ (authz) is replaced with a single OP_FALSE push (`<<0x00>>`).
+    assert no_auth_bin == expected_witness_bytes <> <<0x00>>
+
+    # Slot 19 (sighashPreimage) MUST NOT be empty — it carries the real
+    # BIP-143 preimage. Verify by re-decoding and locating the trailing
+    # witness chunks: ..., preimage_push (slot 19), spend_type_push (slot 20),
+    # OP_FALSE (authz).
+    {:ok, parsed_unlock} = Script.from_binary(no_auth_bin)
+    chunks = parsed_unlock.chunks
+    [authz_chunk, spend_type_chunk, preimage_chunk | _] = Enum.reverse(chunks)
+    assert authz_chunk == {:data, <<>>}
+    assert spend_type_chunk == {:data, <<0x01>>}
+    assert {:data, preimage_bytes} = preimage_chunk
+    # Real BIP-143 preimage is far longer than 32 B; an empty / placeholder
+    # would be a 0-length push, which would FAIL this assertion.
+    assert byte_size(preimage_bytes) > 100
+
+    # Cross-check: slot 19 in the script equals the recomputed BIP-143
+    # preimage byte-for-byte.
+    locking_bin = Script.to_binary(no_auth_input.source_output.locking_script)
+    sats = no_auth_input.source_output.satoshis
+    {:ok, recomputed_preimage} = BSV.Transaction.Sighash.calc_preimage(tx, 0, locking_bin, 0x41, sats)
+    assert preimage_bytes == recomputed_preimage
 
     # Input 1: regular signed leg — witness ‖ <sig> <pubkey>.
     signed_input = Enum.at(tx.inputs, 1)
