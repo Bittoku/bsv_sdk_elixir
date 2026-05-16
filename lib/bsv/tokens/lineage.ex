@@ -2,6 +2,16 @@ defmodule BSV.Tokens.Lineage do
   @moduledoc """
   Off-chain lineage validator for STAS tokens.
 
+  ## Status: EXPERIMENTAL — not functional for STAS 3.0
+
+  This validator classifies only `:stas` / `:stas_btg` / `:p2pkh` script
+  types; a STAS 3.0 ancestor hits the fallthrough clause and returns an
+  error. It also does NOT model the STAS 3.0 issuance-set invariant
+  (`Vin[0] == protoID`) or `illegal_roots` taint propagation. Do not rely
+  on it to validate STAS 3.0 lineage — the authoritative STAS 3.0
+  lineage/validity model lives in the athanor indexer. Reviving this for
+  STAS 3.0 requires adding a `:stas3` clause.
+
   Walks the ancestor chain of a token UTXO back to the genesis (contract)
   transaction, verifying that every hop is a legitimate STAS token transfer
   or issuance.
