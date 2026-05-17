@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.1 — 2026-05-17
+
+### Bug Fixes
+
+- **STAS 3.0 piece-length limit corrected to 127 bytes** — the §9.5 piece-array
+  encoder previously allowed pieces up to 255 bytes, but the on-chain v0.1
+  engine reads each piece's 1-byte length prefix via `OP_1 OP_SPLIT` as a
+  *signed* script-num, so any length ≥ 128 reads as negative and `OP_SPLIT`
+  rejects it. `join_pieces/1` now returns `{:error, :invalid_piece}` for
+  pieces over 127 bytes instead of silently producing unspendable
+  transactions (cdf5f3c).
+
+### Internal / Chores
+
+- Cross-SDK piece-array fixture test pins the §9.5 merge encoding byte-for-byte
+  against the matching `bsv-sdk-rust` test (12ae58b).
+- The lineage validator (`BSV.Tokens.Lineage`) is now documented as
+  experimental — it does not handle STAS 3.0 ancestors or model the
+  issuance-set invariant (12ae58b).
+
 ## v1.5.0 — 2026-05-01
 
 ### STAS 3.0 v0.1 — spec finalization & engine validation
