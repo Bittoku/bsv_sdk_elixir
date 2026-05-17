@@ -128,20 +128,46 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       assert {:ok, ["AB", "CD"]} = Stas3Pieces.split_pieces(array, 2)
     end
 
-    test "piece array rejects piece over 255 bytes" do
-      # Build a synthetic tx whose excision produces a "before" piece of
-      # 256 bytes (which the encoder MUST reject because piece length
-      # cannot fit in a u8).
+    test "piece array rejects piece over 127 bytes (128-byte boundary)" do
+      # The v0.1 engine reads each piece length via `OP_1 OP_SPLIT` as a
+      # signed Bitcoin script-num. Any value >= 0x80 (128) is treated as
+      # negative, causing `OP_SPLIT` to fail with an invalid-split-range
+      # error and producing an unspendable transaction. The encoder MUST
+      # reject pieces of 128 bytes or more.
       #
-      # We craft the tx so that the bytes BEFORE the asset script in
-      # output 0 are >= 256 in size. Adding extra inputs/outputs is the
-      # easiest way to push the asset script past byte 256.
-      padding_dust = <<0x76, 0xA9>> <> :binary.copy(<<0xAA>>, 256) <> <<0x88, 0xAC>>
+      # The "before" piece for vout 1 is the slice of preceding-tx bytes
+      # from offset 0 up to the start of the excised asset-script region
+      # in output 1's locking script (which begins at byte 22 within the
+      # script: 0x14 + 20-byte owner + 0x00 = 22). The total = tx framing
+      # overhead (4 version + 1 in-count + 41 input + 1 out-count +
+      # 8 value + 1 script-len varint) + padding-script bytes + (8 value +
+      # 1 script-len varint + 22 pre-excision bytes in output 1) = 91 +
+      # padding-script-body-size. To get a 128-byte "before" piece:
+      #   padding_body_size = 128 - 91 = 37.
+      #
+      # The padding script is: <<0x76, 0xA9>> <> body(37) <> <<0x88, 0xAC>>
+      # = 41 bytes total (< 253, so 1-byte varint, assumption holds).
+      padding_dust = <<0x76, 0xA9>> <> :binary.copy(<<0xAA>>, 37) <> <<0x88, 0xAC>>
 
-      # outputs: [dust(big), asset]
+      # outputs: [dust(exactly-sized), asset]
       tx = synthetic_tx_with_outputs([padding_dust, asset_output()])
 
       assert {:error, :invalid_piece} =
+               Stas3Pieces.encode_atomic_swap_pieces(<<0x01>>, tx, [1])
+    end
+
+    test "piece array accepts piece of exactly 127 bytes" do
+      # 127 bytes is the maximum positive single-byte script-num (0x7F),
+      # and the largest piece the v0.1 engine can accept via OP_1 OP_SPLIT.
+      # The encoder MUST accept it (returning {:ok, _}).
+      #
+      # Using the same framing analysis as the rejection test above:
+      # "before" piece size = 91 + padding_body_size. For 127 bytes:
+      #   padding_body_size = 127 - 91 = 36.
+      padding_dust = <<0x76, 0xA9>> <> :binary.copy(<<0xAA>>, 36) <> <<0x88, 0xAC>>
+      tx = synthetic_tx_with_outputs([padding_dust, asset_output()])
+
+      assert {:ok, _body} =
                Stas3Pieces.encode_atomic_swap_pieces(<<0x01>>, tx, [1])
     end
   end

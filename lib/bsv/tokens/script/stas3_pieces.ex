@@ -51,8 +51,10 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   3. Reverse the piece order.
   4. Concatenate the reversed pieces, each prefixed by a 1-byte length.
 
-  Each piece MUST fit in a u8 (≤ 255 bytes); larger pieces cause the
-  encoder to return `{:error, :invalid_piece}`.
+  Each piece MUST be at most 127 bytes. The 1-byte length prefix is read
+  by `OP_1 OP_SPLIT` as a signed Bitcoin script-num: 0x80 (128) and above
+  are treated as negative, causing `OP_SPLIT` to fail. Pieces exceeding
+  127 bytes cause the encoder to return `{:error, :invalid_piece}`.
 
   This module exposes:
 
@@ -380,12 +382,16 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   # Concatenate pieces, each prefixed by a 1-byte length. The engine ASM
   # consumes the array via repeated `OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP
   # OP_SPLIT OP_ENDIF` atoms, which interpret each piece as length-prefixed
-  # (1-byte length, then that many bytes). Each piece MUST fit in a u8.
+  # (1-byte length, then that many bytes). The 1-byte length is read by
+  # `OP_1 OP_SPLIT` as a SIGNED Bitcoin script-num (CScriptNum): any value
+  # >= 0x80 (128) is treated as negative, causing `OP_SPLIT` to fail with
+  # an invalid-split-range error and producing an unspendable transaction.
+  # The maximum positive single-byte script-num is 0x7F (127).
   defp join_pieces(pieces) do
     Enum.reduce_while(pieces, {:ok, <<>>}, fn piece, {:ok, acc} ->
       size = byte_size(piece)
 
-      if size > 255 do
+      if size > 127 do
         {:halt, {:error, :invalid_piece}}
       else
         {:cont, {:ok, <<acc::binary, size::8, piece::binary>>}}
