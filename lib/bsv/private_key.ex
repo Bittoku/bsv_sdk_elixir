@@ -141,7 +141,9 @@ defmodule BSV.PrivateKey do
         {:ok, %BSV.PublicKey{point: <<0x02, x_padded::binary>>}}
       end
     rescue
-      e in [ErlangError, ArgumentError] -> {:error, "ECDH computation failed: #{inspect(e)}"}
+      e in [ErlangError] -> {:error, "ECDH computation failed: #{inspect(e)}"}
+      e in [ArgumentError] -> {:error, "ECDH computation failed: #{inspect(e)}"}
+      # :crypto.compute_key can raise :badarg or match failures on invalid curve points
     end
   end
 

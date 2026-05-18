@@ -23,6 +23,10 @@ defmodule BSV.SymmetricKey do
   @legacy_iv_size 32
   @tag_size 16
 
+  # Default AAD: binds ciphertexts to this SDK's encryption context.
+  # Prevents cross-protocol ciphertext transplantation.
+  @default_aad "BSV_SDK_SYMMETRIC_V1"
+
   @doc "Create a new SymmetricKey from a 32-byte binary."
   @spec new(<<_::256>>) :: t()
   def new(<<raw::binary-size(32)>>), do: %__MODULE__{raw: raw}
@@ -34,12 +38,12 @@ defmodule BSV.SymmetricKey do
   @doc """
   Encrypt plaintext with a 32-byte key using AES-256-GCM (12-byte IV).
 
-  The 2-arity version passes empty AAD (`<<>>`) for backward compatibility with
-  BRC-78 and other implementations. Use `encrypt/3` to supply custom Additional
-  Authenticated Data for extra context binding.
+  Includes the SDK default AAD context to bind the ciphertext to this
+  encryption protocol (prevents cross-protocol ciphertext transplantation).
+  Use `encrypt/3` to supply custom Additional Authenticated Data.
   """
   @spec encrypt(<<_::256>> | t(), binary()) :: {:ok, binary()}
-  def encrypt(key, plaintext), do: encrypt(key, plaintext, <<>>)
+  def encrypt(key, plaintext), do: encrypt(key, plaintext, @default_aad)
 
   @doc "Encrypt with explicit Additional Authenticated Data (AAD)."
   @spec encrypt(<<_::256>> | t(), binary(), binary()) :: {:ok, binary()}
@@ -57,11 +61,14 @@ defmodule BSV.SymmetricKey do
   @doc """
   Decrypt ciphertext with a 32-byte key using AES-256-GCM.
 
+  Uses the SDK default AAD for decryption. For legacy ciphertexts encrypted
+  with empty AAD, use `decrypt/4` with `<<>>` as the AAD parameter.
+
   Automatically detects IV size: tries 12-byte (current) first, then
   falls back to 32-byte (legacy) for backward compatibility.
   """
   @spec decrypt(<<_::256>> | t(), binary()) :: {:ok, binary()} | {:error, :decrypt_failed}
-  def decrypt(key, encrypted), do: decrypt(key, encrypted, <<>>)
+  def decrypt(key, encrypted), do: decrypt(key, encrypted, @default_aad)
 
   @doc "Decrypt with explicit Additional Authenticated Data (AAD)."
   @spec decrypt(<<_::256>> | t(), binary(), binary()) :: {:ok, binary()} | {:error, :decrypt_failed}
