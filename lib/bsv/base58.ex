@@ -69,6 +69,7 @@ defmodule BSV.Base58 do
       {:ok, {version, payload}}
     else
       {:error, _} = err -> err
+      _ -> {:error, "invalid Base58Check data"}
     end
   end
 
