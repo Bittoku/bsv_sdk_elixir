@@ -843,6 +843,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   # Append the spec §9.5 trailing block to BOTH STAS inputs' unlocking
   # scripts. For input i (0 or 1), the counterparty is input (1 - i).
+  # Stas3Pieces returns a fully push-framed byte sequence per spec v0.2.3
+  # (`pushdata(counterparty_script) ‖ minimal_numeric_push(piece_count) ‖
+  # pushdata(piece_1) ‖ … ‖ pushdata(piece_N)`), which is spliced into
+  # the unlocking script verbatim.
   defp append_swap_trailing_pieces(tx, token_inputs, pieces) do
     Enum.reduce_while(0..1, {:ok, tx}, fn i, {:ok, acc_tx} ->
       counterparty_script_bin =
@@ -861,84 +865,14 @@ defmodule BSV.Tokens.Factory.Stas3 do
                preceding_tx,
                [asset_idx]
              ),
-           {:ok, trailing_pushes} <-
-             trailing_to_pushes(trailing_bytes, byte_size(counterparty_script_bin)),
            {:ok, updated_tx} <-
-             splice_trailing_into_input(acc_tx, i, trailing_pushes) do
+             splice_trailing_into_input(acc_tx, i, trailing_bytes) do
         {:cont, {:ok, updated_tx}}
       else
         {:error, _} = err -> {:halt, err}
       end
     end)
   end
-
-  # Decompose the encoder's raw output `cp_push ‖ count_byte ‖ piece_array`
-  # into THREE separate Bitcoin pushdata items: counterparty_script,
-  # piece_count (1 byte), and the length-prefixed piece_array. The encoder
-  # already returns counterparty_script wrapped in pushdata framing; we
-  # strip it back to raw bytes via the known prefix length, then re-push.
-  defp trailing_to_pushes(trailing_bytes, cp_len) do
-    # The encoder framing for counterparty_script is:
-    #   * 1B push opcode (≤ 0x4B for ≤75B) OR
-    #   * 0x4C + 1B length (76-255B) OR
-    #   * 0x4D + 2B LE length (256-65535B) etc.
-    # We reverse this to recover the raw counterparty bytes, the
-    # piece_count byte, and the piece_array body.
-    case strip_counterparty_push(trailing_bytes, cp_len) do
-      {:ok, cp_bytes, <<piece_count::8, piece_array::binary>>} ->
-        cp_push = push_data(cp_bytes)
-        count_push = push_data(<<piece_count>>)
-        array_push = push_data(piece_array)
-        {:ok, cp_push <> count_push <> array_push}
-
-      {:ok, _cp_bytes, _} ->
-        {:error, :invalid_trailing_block}
-
-      {:error, _} = err ->
-        err
-    end
-  end
-
-  defp strip_counterparty_push(<<0x00, rest::binary>>, 0), do: {:ok, <<>>, rest}
-
-  defp strip_counterparty_push(<<len, rest::binary>>, cp_len)
-       when len >= 0x01 and len <= 0x4B and len == cp_len do
-    <<cp::binary-size(cp_len), tail::binary>> = rest
-    {:ok, cp, tail}
-  end
-
-  defp strip_counterparty_push(<<0x4C, len, rest::binary>>, cp_len) when len == cp_len do
-    <<cp::binary-size(cp_len), tail::binary>> = rest
-    {:ok, cp, tail}
-  end
-
-  defp strip_counterparty_push(<<0x4D, len::little-16, rest::binary>>, cp_len) when len == cp_len do
-    <<cp::binary-size(cp_len), tail::binary>> = rest
-    {:ok, cp, tail}
-  end
-
-  defp strip_counterparty_push(<<0x4E, len::little-32, rest::binary>>, cp_len) when len == cp_len do
-    <<cp::binary-size(cp_len), tail::binary>> = rest
-    {:ok, cp, tail}
-  end
-
-  defp strip_counterparty_push(_, _), do: {:error, :invalid_trailing_block}
-
-  # Bitcoin pushdata framing — same conventions as
-  # Stas3Builder.push_data/1 / Stas3Pieces.pushdata/1.
-  defp push_data(<<>>), do: <<0x00>>
-
-  defp push_data(data) when byte_size(data) <= 75,
-    do: <<byte_size(data)::8, data::binary>>
-
-  defp push_data(data) when byte_size(data) <= 255,
-    do: <<0x4C, byte_size(data)::8, data::binary>>
-
-  defp push_data(data) when byte_size(data) <= 0xFFFF,
-    do: <<0x4D, byte_size(data)::little-16, data::binary>>
-
-  defp push_data(data),
-    do: <<0x4E, byte_size(data)::little-32, data::binary>>
 
   defp splice_trailing_into_input(tx, input_index, trailing_bytes) do
     input = Enum.at(tx.inputs, input_index)

@@ -68,7 +68,9 @@ defmodule BSV.Tokens.Script.Reader do
   @stas_v2_min_len 1432
   @stas_v2_redemption_offset 1411
   @stas3_base_prefix <<0x6D, 0x82, 0x73, 0x63>>
-  @stas3_base_template_len 2812
+  # Length of the canonical STAS 3.0 engine base template; the previous
+  # 2812-byte length-prefixed engine is deprecated.
+  @stas3_base_template_len 2899
 
   @doc "Parse a locking script binary and classify it."
   @spec read_locking_script(binary()) :: ParsedScript.t()

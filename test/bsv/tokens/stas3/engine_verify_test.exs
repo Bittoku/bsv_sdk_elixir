@@ -122,7 +122,10 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
         ],
         fee_txid: dummy,
         fee_vout: 1,
-        fee_satoshis: 1602,
+        # Exact fee for the 2899-byte canonical engine template (was 1602
+        # under the obsolete 2812-byte template). Recomputed from the
+        # error message after the engine swap.
+        fee_satoshis: 1646,
         fee_locking_script: fee_lock,
         fee_private_key: fee_key,
         destinations: [
@@ -281,36 +284,30 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
 
   describe "verify/4 — STAS 3.0 swap-swap with §9.5 trailing pieces" do
     @doc """
-    With the §9.5 piece-array now encoded length-prefixed (matching the
-    engine ASM's `OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP OP_SPLIT OP_ENDIF`
-    consumption pattern), the swap-swap unlocking-script consumption
-    phase no longer desynchronises on the 0x20 separator. The test
-    surfaces:
+    Atomic-swap engine verification with the spec v0.2.3 §9.5 trailing
+    piece-array auto-wired into both inputs' unlocking scripts. The
+    canonical engine (`github.com/stassso/STAS-3-script-templates`)
+    consumes pieces via the unrolled `OP_OVER OP_IF OP_SWAP OP_1SUB
+    OP_SWAP OP_3 OP_PICK OP_CAT OP_10 OP_ROLL OP_CAT OP_ENDIF` block,
+    driven by a decrementing `piece_count` counter.
 
-      1. The trailing-block prefix bytes for cross-SDK byte-for-byte
-         comparison with `bsv-sdk-rust` (Rust prints the same
-         construction).
-      2. The engine's response on each input (currently
-         `:invalid_split_range` downstream — same symptom as the Rust
-         SDK's `NumberTooSmall: "n is negative"` on the parallel test
-         case `engine_accepts_swap_swap_with_trailing_pieces`).
-
-    The piece-array encoding fix is a *necessary* but not *sufficient*
-    condition for full engine acceptance: there are downstream witness-
-    shape and back-to-genesis checks that this brief explicitly leaves
-    out of scope ("DO NOT change unrelated factories or witness
-    encoders"). Both SDKs converge on the same post-fix engine
-    behaviour, which validates the encoder change.
+    **Status (2026-05-21):** the encoder produces byte-identical output
+    across the Rust + Elixir SDKs (see `real STAS 3.0 locking-script
+    fixture (cross-SDK pin)` in `stas3_pieces_test.exs`), and the
+    canonical engine accepts the non-piece transfer / split / atomic-swap
+    flows. Under this synthetic swap-swap-with-pieces scenario the
+    engine still rejects with `InvalidStackOperation` (Rust mirror
+    reports `index 2147483647 against stack size 28` — a counter
+    underflow indicative of a deeper stack-shape mismatch in the
+    preceding-tx layout or witness wiring before the piece block).
+    Tracked as a follow-up; the encoder/parser correctness is already
+    validated by the cross-SDK pin test.
     """
     @tag :skip
-    # The synthetic preceding tx contains a full STAS 3.0 locking script
-    # (~2835 bytes), so the head "before" piece produced by excising the
-    # asset script exceeds 127 bytes. Under the v0.1 engine's signed 1-byte
-    # length prefix (OP_1 OP_SPLIT reads 0x80+ as negative), pieces > 127
-    # bytes are unencodable. This is a known v0.1 engine limitation pending
-    # a spec revision; the encoder correctly rejects them with
-    # {:error, :invalid_piece}. Skip until the spec is revised.
-    test "swap-swap with length-prefixed pieces is engine-validated" do
+    # See the @doc above. Skip until the deeper engine-acceptance issue
+    # for swap-swap-with-pieces is investigated and fixed in a separate
+    # pass.
+    test "swap-swap with pushdata-per-piece trailing is engine-validated" do
       {token_key_a, owner_a_pkh} = generate_keypair()
       {token_key_b, owner_b_pkh} = generate_keypair()
       {fee_key, fee_pkh} = generate_keypair()
@@ -412,15 +409,12 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
       assert {:ok, %{counterparty_script: ^cp_bytes, piece_count: 2, pieces: pieces}} =
                BSV.Tokens.Script.Stas3Pieces.parse(raw_trailing, 1)
 
-      # Pieces concatenated length-prefixed should be exactly recoverable
-      # via split_pieces/2 — the same path the engine ASM follows.
-      array_bytes =
-        Enum.reduce(pieces, <<>>, fn p, acc ->
-          <<acc::binary, byte_size(p)::8, p::binary>>
-        end)
-
-      assert {:ok, ^pieces} =
-               BSV.Tokens.Script.Stas3Pieces.split_pieces(array_bytes, 2)
+      # (Earlier length-prefixed `split_pieces/2` assertion removed — under
+      # spec v0.2.3 pieces are independent pushdata pushes, not a
+      # length-prefixed blob, so the assertion is obsolete. Re-introduce
+      # an equivalent cross-SDK byte-identity check during Task D when
+      # this test is unskipped + re-pinned against the canonical engine.)
+      _ = pieces
 
       # Engine outcome: the encoder fix unblocks the consumption loop
       # but downstream shape checks remain. We surface the actual

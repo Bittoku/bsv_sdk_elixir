@@ -23,7 +23,7 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
   @asset_tail @engine <> <<0xAA, 0xBB, 0xCC, 0xDD, 0xEE>>
 
   describe "atomic-swap (txType=1) encoding" do
-    test "single asset output → 2 pieces (each length-prefixed)" do
+    test "single asset output → 2 pieces (each its own pushdata)" do
       tx = synthetic_tx_with_outputs([asset_output()])
 
       counterparty = <<0xCC, 0xDD>>
@@ -31,9 +31,10 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       assert {:ok, body} =
                Stas3Pieces.encode_atomic_swap_pieces(counterparty, tx, [0])
 
-      # Wire layout: pushdata(counterparty) ‖ count_byte ‖ pieces.
-      <<0x02, 0xCC, 0xDD, count, array::binary>> = body
-      assert count == 2
+      # Wire layout: pushdata(counterparty) ‖ OP_<count> ‖ pushdata(p)…
+      # For count=2 the count opcode is OP_2 (0x52).
+      <<0x02, 0xCC, 0xDD, count_op, array::binary>> = body
+      assert count_op == 0x52
 
       # Round trip restores the structure.
       assert {:ok,
@@ -45,8 +46,8 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
       assert length(pieces) == 2
 
-      # The two pieces, each prefixed by a 1-byte length, MUST equal the
-      # array body (i.e. the join is exact and reversible).
+      # Each piece is its own pushdata operation; their concatenation
+      # must equal the bytes after the OP_<count> opcode.
       assert array == join(pieces)
     end
 
@@ -93,82 +94,48 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
       hex = Base.encode16(body, case: :lower)
 
-      # Pinned: pushdata(<<0xab, 0xcd, 0xef>>) = 03 ab cd ef ; count = 0x02
-      assert String.starts_with?(hex, "03abcdef02")
+      # Pinned: pushdata(<<0xab, 0xcd, 0xef>>) = "03abcdef" ; piece_count=2 → OP_2 = "52".
+      assert String.starts_with?(hex, "03abcdef52")
     end
 
-    test "piece_array is length-prefixed not separator-delimited" do
-      # Hand-build a 2-piece reverse-ordered array {"AB", "CD"} via the
-      # encoder by constructing a preceding tx whose only asset script's
-      # excision produces those two pieces. Easier: directly invoke the
-      # internal join via the public encoder by crafting a tx where the
-      # before/after slices are exactly "AB" and "CD".
-      #
-      # Simpler still: use Stas3Pieces.split_pieces/2 round-trip to assert
-      # the encoded layout. The encoder's join is private, but the
-      # behaviour is observable via the encoded body of any successful
-      # encode_atomic_swap_pieces call: the array bytes are exactly
-      # `<<len_a::8, a::binary, len_b::8, b::binary>>` with NO separators.
-      #
-      # Build: counterparty = <<>>, tx with one asset output crafted so
-      # the two resulting pieces are precisely "AB" and "CD" (in reverse
-      # order — the `tail` piece comes first, the `before` piece comes
-      # second). We construct the tx by hand.
-      #
-      # An easier and more direct assertion: parse a hand-rolled
-      # length-prefixed body and confirm it round-trips to ["AB", "CD"].
-      array = <<0x02, 0x41, 0x42, 0x02, 0x43, 0x44>>
-      body = <<0x00, 0x02, array::binary>>
+    test "piece_array is pushdata-per-piece (no length-prefix blob)" do
+      # Per spec v0.2.3 §9.5 each piece is its own OP_PUSHDATA operation.
+      # Hand-build a body of shape:
+      #   pushdata(counterparty=empty=OP_0)
+      #   OP_<count> for piece_count
+      #   pushdata("AB")
+      #   pushdata("CD")
+      # and confirm it round-trips through the parser as ["AB", "CD"].
+      body = <<0x00, 0x52, 0x02, 0x41, 0x42, 0x02, 0x43, 0x44>>
 
       assert {:ok, %{counterparty_script: <<>>, piece_count: 2, pieces: ["AB", "CD"]}} =
                Stas3Pieces.parse(body, 1)
 
-      # And the reverse: directly invoke split_pieces/2 to confirm the
-      # array layout is byte-exact.
-      assert {:ok, ["AB", "CD"]} = Stas3Pieces.split_pieces(array, 2)
+      # Verify the join helper builds the same bytes for the same pieces.
+      assert join(["AB", "CD"]) == <<0x02, 0x41, 0x42, 0x02, 0x43, 0x44>>
     end
 
-    test "piece array rejects piece over 127 bytes (128-byte boundary)" do
-      # The v0.1 engine reads each piece length via `OP_1 OP_SPLIT` as a
-      # signed Bitcoin script-num. Any value >= 0x80 (128) is treated as
-      # negative, causing `OP_SPLIT` to fail with an invalid-split-range
-      # error and producing an unspendable transaction. The encoder MUST
-      # reject pieces of 128 bytes or more.
+    test "piece array accepts pieces larger than 127 bytes" do
+      # The 127-byte piece limit was a phantom of the obsolete
+      # length-prefixed encoding (`OP_1 OP_SPLIT` reading a signed
+      # script-num). Under spec v0.2.3 each piece is its own OP_PUSHDATA,
+      # so any size up to OP_PUSHDATA4's range encodes cleanly.
       #
       # The "before" piece for vout 1 is the slice of preceding-tx bytes
       # from offset 0 up to the start of the excised asset-script region
-      # in output 1's locking script (which begins at byte 22 within the
-      # script: 0x14 + 20-byte owner + 0x00 = 22). The total = tx framing
-      # overhead (4 version + 1 in-count + 41 input + 1 out-count +
-      # 8 value + 1 script-len varint) + padding-script bytes + (8 value +
-      # 1 script-len varint + 22 pre-excision bytes in output 1) = 91 +
-      # padding-script-body-size. To get a 128-byte "before" piece:
-      #   padding_body_size = 128 - 91 = 37.
-      #
-      # The padding script is: <<0x76, 0xA9>> <> body(37) <> <<0x88, 0xAC>>
-      # = 41 bytes total (< 253, so 1-byte varint, assumption holds).
+      # in output 1's locking script (offset 22 within the script). The
+      # total = framing overhead (91 bytes) + padding-script body. To get
+      # a 128-byte "before" piece: padding_body_size = 128 - 91 = 37.
       padding_dust = <<0x76, 0xA9>> <> :binary.copy(<<0xAA>>, 37) <> <<0x88, 0xAC>>
-
-      # outputs: [dust(exactly-sized), asset]
       tx = synthetic_tx_with_outputs([padding_dust, asset_output()])
 
-      assert {:error, :invalid_piece} =
+      assert {:ok, body} =
                Stas3Pieces.encode_atomic_swap_pieces(<<0x01>>, tx, [1])
-    end
 
-    test "piece array accepts piece of exactly 127 bytes" do
-      # 127 bytes is the maximum positive single-byte script-num (0x7F),
-      # and the largest piece the v0.1 engine can accept via OP_1 OP_SPLIT.
-      # The encoder MUST accept it (returning {:ok, _}).
-      #
-      # Using the same framing analysis as the rejection test above:
-      # "before" piece size = 91 + padding_body_size. For 127 bytes:
-      #   padding_body_size = 127 - 91 = 36.
-      padding_dust = <<0x76, 0xA9>> <> :binary.copy(<<0xAA>>, 36) <> <<0x88, 0xAC>>
-      tx = synthetic_tx_with_outputs([padding_dust, asset_output()])
-
-      assert {:ok, _body} =
-               Stas3Pieces.encode_atomic_swap_pieces(<<0x01>>, tx, [1])
+      assert {:ok, %{piece_count: 2, pieces: pieces}} = Stas3Pieces.parse(body, 1)
+      # The "before" piece is one of the two pieces — check at least one
+      # exceeds the obsolete 127-byte limit.
+      assert Enum.any?(pieces, fn p -> byte_size(p) >= 128 end)
     end
   end
 
@@ -177,8 +144,9 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       tx = synthetic_tx_with_outputs([asset_output()])
 
       assert {:ok, body} = Stas3Pieces.encode_merge_pieces(2, tx, [0])
-      <<count, array::binary>> = body
-      assert count == 2
+      # piece_count=2 → OP_2 (0x52) as the leading opcode.
+      <<count_op, array::binary>> = body
+      assert count_op == 0x52
       assert {:ok, %{piece_count: 2, pieces: ps}} = Stas3Pieces.parse(body, 2)
       assert length(ps) == 2
       assert join(ps) == array
@@ -234,8 +202,8 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
       assert {:ok, body} = Stas3Pieces.encode_merge_pieces(2, tx, [0])
 
       hex = Base.encode16(body, case: :lower)
-      # Leading byte must be the piece count (0x02).
-      assert String.starts_with?(hex, "02")
+      # Leading byte must be OP_2 (piece_count=2 → minimal numeric opcode 0x52).
+      assert String.starts_with?(hex, "52")
     end
   end
 
@@ -255,21 +223,21 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
       assert count == length(pieces)
 
-      # Re-encode from pieces and compare body.
-      reencoded = pushdata(cp) <> <<count::8>> <> join(pieces)
+      # Re-encode from pieces and compare body. piece_count is emitted as
+      # a minimal numeric push (OP_<n>); each piece as its own pushdata.
+      reencoded = pushdata(cp) <> numeric_push(count) <> join(pieces)
       assert body == reencoded
     end
   end
 
   describe "parse-time validation" do
     test "parse rejects piece_count mismatch on merge (truncated array)" do
-      # Hand-craft a body claiming count=3 but only encoding 2 pieces in
-      # length-prefixed form: 0x02 "aa" 0x02 "bb" — third length read
-      # would fall off the end.
-      malformed = <<0x03, 0x02, "aa", 0x02, "bb">>
+      # Hand-craft a merge=3 body whose piece_count opcode is OP_3 (0x53)
+      # but only two pushdata pieces follow (`pushdata("aa")` and
+      # `pushdata("bb")`). Reading the third piece falls off the end.
+      malformed = <<0x53, 0x02, "aa", 0x02, "bb">>
 
-      assert {:error, :invalid_piece_array_framing} =
-               Stas3Pieces.parse(malformed, 3)
+      assert {:error, :truncated_piece} = Stas3Pieces.parse(malformed, 3)
     end
 
     test "parse rejects unsupported tx_type" do
@@ -277,9 +245,9 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
     end
 
     test "empty piece (zero-length entry) round-trips" do
-      # array = 0x02 "aa" 0x00 0x02 "bb" → 3 pieces: "aa", "", "bb"
-      array = <<0x02, "aa", 0x00, 0x02, "bb">>
-      body = <<0x03, array::binary>>
+      # body = OP_3 (count) ‖ pushdata("aa") ‖ OP_0 (empty piece) ‖ pushdata("bb")
+      # = <<0x53, 0x02, "aa", 0x00, 0x02, "bb">>
+      body = <<0x53, 0x02, "aa", 0x00, 0x02, "bb">>
 
       assert {:ok, %{piece_count: 3, pieces: ["aa", "", "bb"]}} =
                Stas3Pieces.parse(body, 3)
@@ -293,21 +261,19 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
     #   → test `real_stas3_merge_cross_sdk_pin`.
     # Both SDKs MUST produce byte-identical output for the same input.
     #
-    # The fixture uses REAL STAS3 locking scripts — `0x14 <owner:20>` +
-    # `<var2 = OP_0>` + the 2812-byte engine base template (first 4 bytes
-    # `6d827363` = engine prefix) + a `0x14 <redemption:20>` post-OP_RETURN
-    # push. On a real STAS3 script Rust's "excise past [owner][var2]" and
-    # Elixir's "excise from engine prefix" land on the SAME offset (22),
-    # so the encoders converge. They only diverge on malformed (non-STAS3)
-    # input — which is a fixture artifact, not a spec bug.
+    # The fixture uses REAL STAS 3.0 locking scripts — `0x14 <owner:20>` +
+    # `<var2 = OP_0>` + the 2899-byte canonical engine base template
+    # (first 4 bytes `6d827363` = engine prefix) + a `0x14 <redemption:20>`
+    # post-OP_RETURN push. On a real STAS 3.0 script Rust's "excise past
+    # [owner][var2]" and Elixir's "excise from engine prefix" land on
+    # the SAME offset (22), so the encoders converge.
     test "encode_merge_pieces/3 matches the pinned cross-SDK canonical hex" do
       tx = real_stas3_preceding_tx()
 
       assert {:ok, body} = Stas3Pieces.encode_merge_pieces(3, tx, [0, 1])
 
-      # Cross-SDK canonical merge trailing-param hex (txType=3, vouts [0,1]).
       canonical_merge_hex =
-        "030400000000210000000000000000fd270b14b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b00050010000000111111111111111111111111111111111111111111111111111111111111111110000000000ffffffff020000000000000000fd270b14a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a000"
+        "530400000000210000000000000000fd7e0b14b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0004c50010000000111111111111111111111111111111111111111111111111111111111111111110000000000ffffffff020000000000000000fd7e0b14a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a000"
 
       assert Base.encode16(body, case: :lower) == canonical_merge_hex
 
@@ -321,13 +287,15 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
   # Helpers — synthetic preceding-tx construction
   # ────────────────────────────────────────────────────────────────────
 
-  # The 2812-byte STAS 3.0 engine base template (starts with the engine
-  # prefix 6d827363, ends with 0x6a OP_RETURN). Same blob pinned in
-  # reader_push_data_test.exs and the Rust SDK's stas3_pieces.rs fixture.
-  @stas3_base_template_hex "6d82736301218763007b7b517c6e5667766b517f786b517f73637c7f68517f73637c7f68517f73637c7f68517f73637c7f68517f73637c7f68766c936c7c5493686751687652937a76aa607f5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7c5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e011f7f7d7e01007e8111414136d08c5ed2bf3ba048afe6dcaebafe01005f80837e01007e7652967b537a7601ff877c0100879b7d648b6752799368537a7d9776547aa06394677768263044022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802207c607f5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7c5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e01417e7c6421038ff83d8cf12121491609c4939dc11c4aa35503508fe432dc5a5c1905608b92186721023635954789a02e39fb7e54440b6f528d53efd65635ddad7f3c4085f97fdbdc4868ad547f7701207f01207f7701247f517f7801007e02fd00a063546752687f7801007e817f727e7b517f7c01147d887f517f7c01007e817601619f6976014ea063517c7b6776014ba06376014da063755467014d9c6352675168687f7c01007e81687f007b7b687602fd0a7f7701147f7c5579876b826475020100686b587a5893766b7a765155a569005379736382013ca07c517f7c51877b9a6352795487637101007c7e717101207f01147f75777c7567756c766b8b8b79518868677568686c6c7c6b517f7c817f788273638c7f776775010068518463517f7c01147d887f547952876372777c717c767663517f756852875779766352790152879a689b63517f77567a7567527c7681014f0161a5587a9a63015094687e68746c766b5c9388748c76795879888c8c7978886777717c767663517f7568528778015287587a9a9b745394768b797663517f756852877c6c766b5c936ea0637c8c768b797663517f75685287726b9b7c6c686ea0637c5394768b797663517f75685287726b9b7c6c686ea063755494797663517f756852879b676d689b63006968687c717167567a75686d7c518763755279686c755879a9886b6b6b6b6b6b6b827763af686c6c6c6c6c6c6c547a577a7664577a577a587a597a786354807e7e676d68aa880067765158a569765187645294587a53795a7a7e7e78637c8c7c53797e597a7e6878637c8c7c53797e597a7e6878637c8c7c53797e597a7e6878637c8c7c53797e597a7e6878637c8c7c53797e597a7e6867587a6876aa5a7a7d54807e597a5b7a5c7a786354807e6f7e7eaa727c7e676d6e7eaa7c687b7eaa5a7a7d877663516752687c72879b69537a6491687c7b547f77517f7853a0916901247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f77788c6301247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f777852946301247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f77686877517f7c52797d8b9f7c53a09b91697c76638c7c587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f777c6876638c7c587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f777c6863587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f7768587f517f7801007e817602fc00a06302fd00a063546752687f7801007e81727e7b7b687f75517f7c01147d887f517f7c01007e817601619f6976014ea0637c6776014ba06376014da063755467014d9c6352675168687f7c01007e81687f68557964577988756d67716881687863567a677b68587f7c8153796353795287637b6b537a6b717c6b6b537a6b676b577a6b597a6b587a6b577a6b7c68677b93687c547f7701207f75748c7a7669765880044676a914780114748c7a76727b748c7a768291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068685c795c79636c766b7363517f7c51876301207f7c5279a8877c011c7f5579877c01147f755679879a9a6967756868687e777e7e827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e0a888201218763ac67517f07517f73637c7f6876767e767e7e02ae687e7e7c557a00740111a063005a79646b7c748c7a76697d937b7b58807e6c91677c748c7a7d58807e6c6c6c557a680114748c7a748c7a768291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068685479635f79676c766b0115797363517f7c51876301207f7c5279a8877c011c7f5579877c01147f755679879a9a6967756868687e777e7e827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7c637e677c6b7c6b7c6b7e7c6b68685979636c6c766b786b7363517f7c51876301347f77547f547f75786352797b01007e81957c01007e81965379a169676d68677568685c797363517f7c51876301347f77547f547f75786354797b01007e81957c01007e819678a169676d68677568687568740111a063748c7a76697d58807e00005c79635e79768263517f756851876c6c766b7c6b768263517f756851877b6e9b63789c6375745294797b78877b7b877d9b69637c917c689167745294797c638777637c917c91686777876391677c917c686868676d6d68687863537a6c936c6c6c567a567a54795479587a676b72937b7b5c795e796c68748c7a748c7a7b636e717b7b877b7b879a6967726d6801147b7e7c8291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068687e7c636c766b7e726b6b726b6b675b797e68827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e68740111a063748c7a76697d58807e00005c79635e79768263517f756851876c6c766b7c6b768263517f756851877b6e9b63789c6375745294797b78877b7b877d9b69637c917c689167745294797c638777637c917c91686777876391677c917c686868676d6d68687863537a6c936c6c6c567a567a54795479587a676b72937b7b5c795e796c68748c7a748c7a7b636e717b7b877b7b879a6967726d6801147b7e7c8291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068687e7c636c766b7e726b6b726b6b675b797e68827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e68597a636c6c6c6d6c6c6d6c9d687c587a9d7d7e5c79635d795880041976a9145e797e0288ac7e7e6700687d7e5c7a766302006a7c7e827602fc00a06301fd7c7e536751687f757c7e0058807c7e687d7eaa6b7e7e7e7e7e7eaa78877c6c877c6c9a9b726d726d77776a"
+  # The 2899-byte STAS 3.0 canonical engine base template (starts with the
+  # engine prefix 6d827363, ends with 0x6a OP_RETURN). Same blob pinned
+  # in reader_push_data_test.exs and the Rust SDK's stas3_pieces.rs
+  # fixture. SHA-256: 5c659f5f3abdad612c4bfd19b6034f2df0c0bcef1af1ca928d0f5a34ac3ee371.
+  # Source: github.com/stassso/STAS-3-script-templates (v0.2.3).
+  @stas3_base_template_hex "6d82736301218763007b7b517c6e5667766b517f786b517f73637c7f68517f73637c7f68517f73637c7f68517f73637c7f68517f73637c7f68766c936c7c5493686751687652937a76aa607f5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7c5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e011f7f7d7e01007e8111414136d08c5ed2bf3ba048afe6dcaebafe01005f80837e01007e7652967b537a7601ff877c0100879b7d648b6752799368537a7d9776547aa06394677768263044022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802207c607f5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7c5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e01417e7c6421038ff83d8cf12121491609c4939dc11c4aa35503508fe432dc5a5c1905608b92186721023635954789a02e39fb7e54440b6f528d53efd65635ddad7f3c4085f97fdbdc4868ad547f7701207f01207f7701247f517f7801007e02fd00a063546752687f7801007e817f727e7b517f7c01147d887f517f7c01007e817601619f6976014ea063517c7b6776014ba06376014da063755467014d9c6352675168687f7c01007e81687f007b7b687602540b7f7701147f7c5579876b826475020100686b587a5893766b7a765155a569005379736382013ca07c517f7c51877b9a6352795487637101007c7e717101207f01147f7577776775785387646c766b8b8b7951886868677568686c6c7c6b517f7c817f788273638c7f776775010068518463517f7c01147d887f547952876372777c717c767663517f756852875779766352790152879a689b63517f77567a7567527c7681014f0161a5587a9a63015094687e68746c766b5c9388748c76795879888c8c7978886777717c567a5679538764780152879a787663517f756852879b745394768b797663517f756852877c6c766b5c936ea0637c8c768b797663517f75685287726b9b7c6c686ea0637c5394768b797663517f75685287726b9b7c6c686ea063755494797663517f756852879b676d689b63006968677568687c717167567a7568788273638c7f776775010068528463517f7c01147d887f547953876372777c677768686d6c75787653877c52879b636c75006b687c518763755279685879a9886b6b6b6b6b6b6b827763af686c6c6c6c6c6c6c547a577a7664577a577a587a597a786354807e7e676d68aa8800677b7c7651876375577a7c587a67007c68765258a569765187645294597a53795b7a7e7e78637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e68687276647572677772755168537a76aa5a7a7d54807e597a5b7a5c7a786354807e6f7e7eaa727c7e676d6e7eaa7c687b7eaa5a7a7d877663516752687c72879b69537a6491687c7b547f77517f7853a0916901247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f77788c6301247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f777852946301247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f77686877517f7c52797d8b9f7c53a09b91697c76638c7c587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f777c6876638c7c587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f777c6863587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f7768587f517f7801007e817602fc00a06302fd00a063546752687f7801007e81727e7b7b687f75517f7c01147d887f517f7c01007e817601619f6976014ea0637c6776014ba06376014da063755467014d9c6352675168687f7c01007e81687f68557964577988756d67716881687863567a677b68587f7c8153796353795287637b6b537a6b717c6b6b537a6b676b577a6b597a6b587a6b577a6b7c68677b93687c547f7701207f75748c7a7669765880044676a914780114748c7a76727b748c7a768291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068685c795c79636c766b7363517f7c51876301207f7c5279a8877c011c7f5579877c01147f755679879a9a6967756868687e777e7e827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e0a888201218763ac67517f07517f73637c7f6876767e767e7e02ae687e7e7c557a00740111a063005a79646b7c748c7a76697d937b7b58807e6c91677c748c7a7d58807e6c6c6c557a680114748c7a748c7a768291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068685479635f79676c766b0115797363517f7c51876301207f7c5279a8877c011c7f5579877c01147f755679879a9a6967756868687e777e7e827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7c637e677c6b7c6b7c6b7e7c6b68685979636c6c766b786b7363517f7c51876301347f77547f547f75786352797b01007e81957c01007e81965379a169676d68677568685c797363517f7c51876301347f77547f547f75786354797b01007e81957c01007e819678a169676d68677568687568740111a063748c7a76697d58807e00005c79635e79768263517f756851876c6c766b7c6b768263517f756851877b6e9b63789c6375745294797b78877b7b877d9b69637c917c689167745294797c638777637c917c91686777876391677c917c686868676d6d68687863537a6c936c6c6c567a567a54795479587a676b72937b7b5c795e796c68748c7a748c7a7b636e717b7b877b7b879a6967726d6801147b7e7c8291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068687e7c636c766b7e726b6b726b6b675b797e68827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e68740111a063748c7a76697d58807e00005c79635e79768263517f756851876c6c766b7c6b768263517f756851877b6e9b63789c6375745294797b78877b7b877d9b69637c917c689167745294797c638777637c917c91686777876391677c917c686868676d6d68687863537a6c936c6c6c567a567a54795479587a676b72937b7b5c795e796c68748c7a748c7a7b636e717b7b877b7b879a6967726d6801147b7e7c8291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068687e7c636c766b7e726b6b726b6b675b797e68827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e68597a636c6c6c6d6c6c6d6c9d687c587a9d7d7e5c79635d795880041976a9145e797e0288ac7e7e6700687d7e5c7a766302006a7c7e827602fc00a06301fd7c7e536751687f757c7e0058807c7e687d7eaa6b7e7e7e7e7e7eaa78877c6c877c6c9a9b726d726d77776a"
 
   # Build a REAL STAS 3.0 locking script:
-  #   0x14 <owner:20> + <var2 = OP_0> + 2812-byte base template
+  #   0x14 <owner:20> + <var2 = OP_0> + 2899-byte canonical base template
   #   + <0x14 redemption:20> post-OP_RETURN data.
   defp real_stas3_locking_script(owner_byte, redemption_byte) do
     {:ok, base} = Base.decode16(@stas3_base_template_hex, case: :mixed)
@@ -419,23 +387,26 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
 
   defp dust_output, do: <<0x76, 0xA9, 0x14>> <> :binary.copy(<<0x88>>, 20) <> <<0x88, 0xAC>>
 
-  # Compute the length-prefixed piece-array body produced by the encoder
-  # for the named outputs (matches encoder semantics).
+  # Concatenate pushdata-framed pieces, mirroring the new option-3 encoder
+  # (one OP_PUSHDATA per piece — no length-prefix blob).
   defp tx_minus_excised(tx, indices) do
     {:ok, pieces} = Stas3Pieces.build_pieces_from_tx(tx, indices)
     join(pieces)
   end
 
-  # Length-prefixed join, mirroring Stas3Pieces' internal `join_pieces/1`.
+  # Pushdata-per-piece join, mirroring Stas3Pieces' new internal layout.
   defp join(pieces) do
-    Enum.reduce(pieces, <<>>, fn piece, acc ->
-      <<acc::binary, byte_size(piece)::8, piece::binary>>
-    end)
+    Enum.reduce(pieces, <<>>, fn piece, acc -> acc <> pushdata(piece) end)
   end
 
-  # Mirror Stas3Pieces' internal pushdata for the snapshot reencode test.
+  # Mirror Stas3Pieces' internal pushdata helper.
   defp pushdata(<<>>), do: <<0x00>>
   defp pushdata(d) when byte_size(d) <= 75, do: <<byte_size(d)::8>> <> d
   defp pushdata(d) when byte_size(d) <= 255, do: <<0x4C, byte_size(d)::8>> <> d
   defp pushdata(d) when byte_size(d) <= 0xFFFF, do: <<0x4D, byte_size(d)::little-16>> <> d
+
+  # Mirror Stas3Pieces' internal minimal-numeric piece_count push.
+  defp numeric_push(0), do: <<0x00>>
+  defp numeric_push(n) when n in 1..16, do: <<0x50 + n>>
+  defp numeric_push(n) when n in 17..127, do: <<0x01, n>>
 end

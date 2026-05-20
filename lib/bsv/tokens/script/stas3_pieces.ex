@@ -1,60 +1,52 @@
 defmodule BSV.Tokens.Script.Stas3Pieces do
   @moduledoc """
-  STAS 3.0 v0.1 §8.1 / §9.5 atomic-swap and merge "piece array" trailing
+  STAS 3.0 v0.2.3 §8 / §9.5 atomic-swap and merge "piece array" trailing
   parameters for STAS 3.0 unlocking scripts.
 
   ## Background
 
   For atomic-swap (`txType = 1`) and merge transactions (`txType = 2..7`),
   the STAS unlocking script appends a trailing block whose layout depends
-  on `txType`:
+  on `txType`. Per spec v0.2.3, each piece is **its own
+  `OP_PUSHDATA` operation** in the unlocking script, and `piece_count` is
+  a **minimal Bitcoin numeric push** (DXS convention from
+  `dxs-bsv-token-sdk`'s `ScriptBuilder.addNumber`: for `n ∈ 1..=16` emit
+  `OP_<n>` = single byte `0x50 + n`; for `n ∈ 17..=127` emit `0x01 <n>`;
+  for larger emit script-num-encoded with sign-bit sentinel):
 
       # txType = 1 (atomic swap)
-      counterparty_locking_script  ←  full locking script of the OTHER party's STAS UTXO
-      piece_count                   ←  1-byte unsigned integer
-      piece_array                   ←  pieces, each LENGTH-PREFIXED (1-byte u8 length, then bytes)
+      pushdata(counterparty_locking_script)
+      minimal_numeric_push(piece_count)
+      pushdata(piece_1) ... pushdata(piece_N)
 
       # txType = 2..7 (merge)
-      piece_count                   ←  1-byte unsigned integer; value MUST equal txType
-      piece_array                   ←  pieces, each LENGTH-PREFIXED (1-byte u8 length, then bytes)
+      minimal_numeric_push(piece_count)         # must equal txType
+      pushdata(piece_1) ... pushdata(piece_N)
 
   ## What "pieces" are (spec §9.5)
 
-  The spec §9.5 wording — "the reverse-ordered array of pieces is
-  delimited by space (' ') character" — is misleading: the engine ASM is
-  the source of truth. The engine ASM repeats this atom to consume the
-  piece array:
+  The canonical engine
+  (`github.com/stassso/STAS-3-script-templates`) consumes them via an
+  unrolled, counter-driven block:
 
-      OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP OP_SPLIT OP_ENDIF
+      OP_OVER OP_IF OP_SWAP OP_1SUB OP_SWAP OP_3 OP_PICK OP_CAT OP_10 OP_ROLL OP_CAT OP_ENDIF
 
-  which reads each piece as **length-prefixed** — 1 byte off as the piece
-  length, then that many bytes off as the piece body. A `0x20`-separator
-  encoding desynchronises the loop and leaves residual bytes that the
-  engine eventually mis-uses as a script-number, producing an OP_VERIFY
-  or InvalidStackOperation failure. Both Rust and Elixir SDKs originally
-  implemented the encoder as space-delimited based on the spec wording;
-  this module now matches the engine.
+  repeated 5×, driven by a decrementing `piece_count` counter. There is
+  **no concatenated length-prefixed blob** and **no per-piece size limit** —
+  the earlier 127-byte limit was a phantom of the obsolete encoding.
 
-  Concretely, given the preceding transaction (the tx that produced the
-  swap input UTXO):
+  Given the preceding transaction (the tx that produced the input UTXO):
 
   1. For each named asset output (`asset_output_indices`), locate the
      locking script. Within that script, identify the "asset script" —
-     i.e. the bytes from the engine prefix (`0x6D 0x82 0x73 0x63`) all
-     the way to the end of the script. Everything BEFORE that prefix
-     belongs to the two var fields (`owner` push + `var2` push) of the
-     STAS frame and is NOT excised.
-  2. The remaining tx bytes (the parts that AREN'T the excised regions)
-     are the pieces. They are split into contiguous slices: one before
-     the first excised region, one between each pair of adjacent
-     excised regions, and one after the last.
-  3. Reverse the piece order.
-  4. Concatenate the reversed pieces, each prefixed by a 1-byte length.
-
-  Each piece MUST be at most 127 bytes. The 1-byte length prefix is read
-  by `OP_1 OP_SPLIT` as a signed Bitcoin script-num: 0x80 (128) and above
-  are treated as negative, causing `OP_SPLIT` to fail. Pieces exceeding
-  127 bytes cause the encoder to return `{:error, :invalid_piece}`.
+     the bytes from the engine prefix (`0x6D 0x82 0x73 0x63`) to the end
+     of the script. Everything BEFORE that prefix belongs to the two var
+     fields (`owner` push + `var2` push) and is NOT excised.
+  2. The remaining tx bytes (parts that AREN'T excised) are the pieces:
+     one before the first excised region, one between each pair, and one
+     after the last.
+  3. Reverse the piece order (head on top of stack).
+  4. Concatenate independent pushdata pushes — no length prefix inside.
 
   This module exposes:
 
@@ -62,11 +54,9 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
     * `encode_merge_pieces/3` — build the trailing block for txType=2..7
     * `parse/2` — decode a previously-encoded trailing block
 
-  Strict boundaries are enforced: at least one asset output must be named,
-  the merge piece count must be in `2..7`, the inner array piece count
-  must equal the leading length byte, and pushes after the leading
-  counterparty-script length use Bitcoin pushdata framing (so reading
-  back is unambiguous).
+  Strict boundaries: at least one asset output must be named, the merge
+  piece count must be in `2..7`, and parsed `piece_count` must match the
+  number of pieces read back.
   """
 
   @engine_prefix <<0x6D, 0x82, 0x73, 0x63>>
@@ -92,12 +82,13 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   Build the trailing-parameters block for a `txType = 1` atomic-swap
   unlocking script.
 
-  Returns the raw byte sequence:
+  Returns the byte sequence formed by appending independent Bitcoin
+  pushdata operations:
 
-      counterparty_script_push  ‖  piece_count_byte  ‖  piece_array
+      pushdata(counterparty_script) ‖ minimal_numeric_push(piece_count) ‖
+      pushdata(piece_1) ‖ … ‖ pushdata(piece_N)
 
-  where `piece_array` is the reverse-ordered, length-prefixed result of
-  excising every named asset script from `preceding_tx`.
+  ready to splice verbatim into an unlocking script.
 
   `asset_output_indices` MUST list at least one valid output index in
   `preceding_tx`.
@@ -107,16 +98,23 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   def encode_atomic_swap_pieces(counterparty_locking_script, preceding_tx, asset_output_indices)
       when is_binary(counterparty_locking_script) and is_binary(preceding_tx) and
              is_list(asset_output_indices) do
-    with {:ok, pieces} <- build_pieces_from_tx(preceding_tx, asset_output_indices),
-         {:ok, joined} <- join_pieces(pieces) do
-      cp_push = pushdata(counterparty_locking_script)
+    with {:ok, pieces} <- build_pieces_from_tx(preceding_tx, asset_output_indices) do
       count = length(pieces)
 
-      if count > 255 do
-        {:error, {:piece_count_overflow, count}}
-      else
-        body = <<cp_push::binary, count::8, joined::binary>>
-        {:ok, body}
+      cond do
+        count == 0 ->
+          {:error, :no_asset_outputs}
+
+        count > 255 ->
+          {:error, {:piece_count_overflow, count}}
+
+        true ->
+          out =
+            pushdata(counterparty_locking_script) <>
+              minimal_numeric_push(count) <>
+              concat_pushdata(pieces)
+
+          {:ok, out}
       end
     end
   end
@@ -125,22 +123,15 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   Build the trailing-parameters block for a merge unlocking script
   (`txType = 2..7`).
 
-  Returns:
+  Returns the byte sequence:
 
-      piece_count_byte  ‖  piece_array
+      minimal_numeric_push(piece_count) ‖
+      pushdata(piece_1) ‖ … ‖ pushdata(piece_N)
 
-  Per spec §8.1, `piece_count` MUST equal the merge txType (2..7) and
-  MUST equal the resulting number of pieces in the array. With `K`
-  excised asset-script regions in `preceding_tx`, the resulting array
-  has `K + 1` pieces (the slice before the first excision, the slices
-  between adjacent excisions, and the slice after the last). So
+  Per spec §8, `piece_count` MUST equal the merge txType (2..7) and MUST
+  equal the resulting number of pieces. With `K` excised asset-script
+  regions in `preceding_tx`, the resulting array has `K + 1` pieces, so
   `length(asset_output_indices)` MUST equal `piece_count - 1`.
-
-  ## Examples
-
-    * txType=2 with one asset excision → 2 pieces
-    * txType=3 with two asset excisions → 3 pieces
-    * txType=7 with six asset excisions → 7 pieces
   """
   @spec encode_merge_pieces(2..7, binary(), [non_neg_integer()]) ::
           {:ok, binary()} | {:error, term()}
@@ -154,13 +145,15 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
         {:error, {:piece_count_mismatch, piece_count, length(asset_output_indices)}}
 
       true ->
-        with {:ok, pieces} <- build_pieces_from_tx(preceding_tx, asset_output_indices),
-             {:ok, joined} <- join_pieces(pieces) do
+        with {:ok, pieces} <- build_pieces_from_tx(preceding_tx, asset_output_indices) do
           if length(pieces) != piece_count do
             {:error, {:piece_count_mismatch, piece_count, length(pieces)}}
           else
-            body = <<piece_count::8, joined::binary>>
-            {:ok, body}
+            out =
+              minimal_numeric_push(piece_count) <>
+                concat_pushdata(pieces)
+
+            {:ok, out}
           end
         end
     end
@@ -179,55 +172,62 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   `tx_type` selects the layout:
 
     * `1`     — atomic swap: leading pushdata-framed counterparty script,
-                then 1-byte count, then length-prefixed piece array.
-                Returns `{:ok, %{counterparty_script: _, piece_count: _,
-                pieces: _}}`.
+                then a minimal-numeric-push piece_count, then `piece_count`
+                independent pushdata piece operations. Returns
+                `{:ok, %{counterparty_script: _, piece_count: _, pieces: _}}`.
 
-    * `2..7`  — merge: 1-byte count (must equal `tx_type`), then
-                length-prefixed piece array. Returns `{:ok, %{piece_count:
-                _, pieces: _}}`.
+    * `2..7`  — merge: leading minimal-numeric-push piece_count (must
+                equal `tx_type`), then `piece_count` independent pushdata
+                piece operations. Returns
+                `{:ok, %{piece_count: _, pieces: _}}`.
 
   On malformed input — bad framing, count mismatch with array length,
-  unsupported tx_type — returns `{:error, reason}`.
+  unsupported `tx_type` — returns `{:error, reason}`.
   """
   @spec parse(binary(), 1..7) ::
           {:ok, parsed_swap() | parsed_merge()} | {:error, term()}
   def parse(bin, 1) when is_binary(bin) do
-    with {:ok, cp_script, rest} <- read_pushdata(bin),
-         <<count::8, array::binary>> <- rest,
-         {:ok, pieces} <- split_pieces(array, count) do
-      {:ok,
-       %{
-         counterparty_script: cp_script,
-         piece_count: count,
-         pieces: pieces
-       }}
+    with {:ok, cp_script, rest1} <- read_pushdata(bin),
+         {:ok, count_body, rest2} <- read_pushdata(rest1),
+         {:ok, count} <- numeric_body(count_body),
+         {:ok, pieces, leftover} <- read_n_pushdata(rest2, count) do
+      cond do
+        leftover != <<>> ->
+          {:error, :piece_array_trailing_bytes}
+
+        true ->
+          {:ok, %{counterparty_script: cp_script, piece_count: count, pieces: pieces}}
+      end
     else
       :error -> {:error, :invalid_pushdata}
-      <<>> -> {:error, :missing_piece_count}
       {:error, _} = err -> err
-      _ -> {:error, :invalid_swap_trailing}
     end
   end
 
-  def parse(<<count::8, array::binary>>, tx_type)
-      when is_integer(tx_type) and tx_type in 2..7 do
-    cond do
-      count != tx_type ->
-        {:error, {:piece_count_mismatch, tx_type, count}}
+  def parse(bin, tx_type)
+      when is_binary(bin) and is_integer(tx_type) and tx_type in 2..7 do
+    with {:ok, count_body, rest} <- read_pushdata(bin),
+         {:ok, count} <- numeric_body(count_body),
+         true <- count == tx_type or {:error, {:piece_count_mismatch, tx_type, count}},
+         {:ok, pieces, leftover} <- read_n_pushdata(rest, count) do
+      cond do
+        leftover != <<>> ->
+          {:error, :piece_array_trailing_bytes}
 
-      true ->
-        case split_pieces(array, count) do
-          {:ok, pieces} -> {:ok, %{piece_count: count, pieces: pieces}}
-          {:error, _} = err -> err
-        end
+        true ->
+          {:ok, %{piece_count: count, pieces: pieces}}
+      end
+    else
+      :error -> {:error, :invalid_pushdata}
+      {:error, _} = err -> err
+      other -> {:error, other}
     end
   end
 
   def parse(_, tx_type), do: {:error, {:unsupported_tx_type, tx_type}}
 
   # ──────────────────────────────────────────────────────────────────────
-  # Internals
+  # Internals — preceding-tx walking
   # ──────────────────────────────────────────────────────────────────────
 
   # Build the reverse-ordered piece list from the preceding tx and a
@@ -259,7 +259,7 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
 
       # `acc` is already reversed (insertion order: first piece pushed
       # last). The spec says the array MUST be reverse-ordered relative
-      # to in-tx order — which is exactly what we have.
+      # to in-tx order — which is what we have.
       {:ok, pieces}
     end
   end
@@ -292,9 +292,8 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   end
 
   # Walk the tx once, returning {script_start_offset, script_length} for
-  # every output. We only need a minimal serialiser-aware walker — enough
-  # to skip version, input list, and find each output's locking-script
-  # offset.
+  # every output. A minimal serialiser-aware walker — enough to skip
+  # version, input list, and find each output's locking-script offset.
   defp locate_outputs(tx) do
     try do
       <<_version::little-32, rest::binary>> = tx
@@ -346,8 +345,11 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   defp read_varint(<<0xFF, v::little-64, rest::binary>>, off),
     do: {v, rest, off + 9}
 
-  # Bitcoin pushdata frame for the leading counterparty-script slot.
-  # We mirror the conventions used in `Stas3Builder.push_data/1`.
+  # ──────────────────────────────────────────────────────────────────────
+  # Internals — Bitcoin pushdata framing
+  # ──────────────────────────────────────────────────────────────────────
+
+  # Standard Bitcoin pushdata framing, opcode chosen by size.
   defp pushdata(<<>>), do: <<0x00>>
 
   defp pushdata(data) when byte_size(data) <= 75,
@@ -362,7 +364,32 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
   defp pushdata(data),
     do: <<0x4E, byte_size(data)::little-32, data::binary>>
 
+  defp concat_pushdata(pieces),
+    do: Enum.reduce(pieces, <<>>, fn p, acc -> acc <> pushdata(p) end)
+
+  # Minimal Bitcoin numeric push (DXS's `ScriptBuilder.addNumber` shape):
+  #
+  #   * `n == 0`         → `OP_0` (0x00)
+  #   * `n ∈ 1..=16`     → single opcode `OP_<n>` (`0x50 + n`)
+  #   * `n ∈ 17..=127`   → 2-byte direct push `0x01 <n>` (positive script-num)
+  #   * `n ∈ 128..=255`  → 3-byte push `0x02 <n> 0x00` (sign-bit sentinel)
+  #
+  # The engine decrements this value via `OP_1SUB` and tests it via
+  # `OP_OVER OP_IF` on each unrolled iteration of the piece consumer.
+  defp minimal_numeric_push(0), do: <<0x00>>
+  defp minimal_numeric_push(n) when n in 1..16, do: <<0x50 + n>>
+  defp minimal_numeric_push(n) when n in 17..127, do: <<0x01, n>>
+  defp minimal_numeric_push(n) when n in 128..255, do: <<0x02, n, 0x00>>
+
+  # Read a single Bitcoin pushdata or numeric opcode. Numeric opcodes
+  # `OP_1NEGATE` (0x4F) and `OP_1..OP_16` (0x51..0x60) return their
+  # script-num body (so `piece_count` reads back uniformly).
+  defp read_pushdata(<<>>), do: :error
   defp read_pushdata(<<0x00, rest::binary>>), do: {:ok, <<>>, rest}
+  defp read_pushdata(<<0x4F, rest::binary>>), do: {:ok, <<0x81>>, rest}
+
+  defp read_pushdata(<<op, rest::binary>>) when op >= 0x51 and op <= 0x60,
+    do: {:ok, <<op - 0x50>>, rest}
 
   defp read_pushdata(<<len, data::binary-size(len), rest::binary>>)
        when len >= 0x01 and len <= 0x4B,
@@ -379,48 +406,23 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
 
   defp read_pushdata(_), do: :error
 
-  # Concatenate pieces, each prefixed by a 1-byte length. The engine ASM
-  # consumes the array via repeated `OP_1 OP_SPLIT OP_IFDUP OP_IF OP_SWAP
-  # OP_SPLIT OP_ENDIF` atoms, which interpret each piece as length-prefixed
-  # (1-byte length, then that many bytes). The 1-byte length is read by
-  # `OP_1 OP_SPLIT` as a SIGNED Bitcoin script-num (CScriptNum): any value
-  # >= 0x80 (128) is treated as negative, causing `OP_SPLIT` to fail with
-  # an invalid-split-range error and producing an unspendable transaction.
-  # The maximum positive single-byte script-num is 0x7F (127).
-  defp join_pieces(pieces) do
-    Enum.reduce_while(pieces, {:ok, <<>>}, fn piece, {:ok, acc} ->
-      size = byte_size(piece)
+  # Read exactly `n` pushdata operations in sequence, returning the list
+  # and the leftover bytes. Caller is responsible for asserting that the
+  # leftover is empty (or has the structure they expect).
+  defp read_n_pushdata(bytes, 0), do: {:ok, [], bytes}
 
-      if size > 127 do
-        {:halt, {:error, :invalid_piece}}
-      else
-        {:cont, {:ok, <<acc::binary, size::8, piece::binary>>}}
-      end
-    end)
-  end
-
-  # Split a length-prefixed piece-array body into exactly `expected_count`
-  # pieces. For each iteration: read 1 byte as the length, take that many
-  # bytes as the piece body. The buffer MUST be exactly consumed.
-  @doc false
-  @spec split_pieces(binary(), non_neg_integer()) ::
-          {:ok, [binary()]} | {:error, term()}
-  def split_pieces(_array, 0), do: {:error, :zero_piece_count}
-
-  def split_pieces(array, expected_count) when is_binary(array) do
-    case do_split_pieces(array, expected_count, []) do
-      {:ok, pieces} -> {:ok, pieces}
+  defp read_n_pushdata(bytes, n) when n > 0 do
+    with {:ok, piece, rest} <- read_pushdata(bytes),
+         {:ok, more, tail} <- read_n_pushdata(rest, n - 1) do
+      {:ok, [piece | more], tail}
+    else
+      :error -> {:error, :truncated_piece}
       {:error, _} = err -> err
     end
   end
 
-  defp do_split_pieces(<<>>, 0, acc), do: {:ok, Enum.reverse(acc)}
-
-  defp do_split_pieces(_rest, 0, _acc),
-    do: {:error, :piece_array_trailing_bytes}
-
-  defp do_split_pieces(<<len::8, piece::binary-size(len), rest::binary>>, n, acc),
-    do: do_split_pieces(rest, n - 1, [piece | acc])
-
-  defp do_split_pieces(_rest, _n, _acc), do: {:error, :invalid_piece_array_framing}
+  # Reduce a 1-byte numeric body to an integer in 0..255. Anything else
+  # is rejected as a malformed piece_count.
+  defp numeric_body(<<n>>), do: {:ok, n}
+  defp numeric_body(_), do: {:error, :malformed_piece_count}
 end
