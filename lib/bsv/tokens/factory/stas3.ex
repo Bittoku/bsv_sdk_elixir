@@ -841,69 +841,260 @@ defmodule BSV.Tokens.Factory.Stas3 do
   def build_stas3_swap_swap_tx_with_pieces(_config, _pieces),
     do: {:error, Error.invalid_destination("swap-swap with pieces requires exactly 2 piece params")}
 
-  # Append the spec §9.5 trailing block to BOTH STAS inputs' unlocking
-  # scripts. For input i (0 or 1), the counterparty is input (1 - i).
-  # Stas3Pieces returns a fully push-framed byte sequence per spec v0.2.3
-  # (`pushdata(counterparty_script) ‖ minimal_numeric_push(piece_count) ‖
-  # pushdata(piece_1) ‖ … ‖ pushdata(piece_N)`), which is spliced into
-  # the unlocking script verbatim.
+  # Splice the spec §9.5 DXS-aligned trailing block IN PLACE OF the bare
+  # txType byte at slot 18 for BOTH STAS inputs' unlocking scripts.
+  # Mirrors `bsv-sdk-rust`'s `build_stas3_swap_swap_tx_with_pieces`.
+  #
+  # Layout (push order):
+  #   push(counterparty_vout)         numeric
+  #   push(pieces[0]) … push(pieces[N-1])  raw pushdata each
+  #   push(piece_count)               numeric
+  #   push(counterparty_asset_tail)   raw pushdata
+  #   push(1)                         numeric — "swap marker"
+  #
+  # Pieces come from the COUNTERPARTY's preceding_tx (not own); the
+  # engine uses them to cross-verify the other leg's back-to-genesis
+  # ancestor. `counterparty_asset_tail` is the bytes after owner_push +
+  # var2_push in the counterparty's locking script.
   defp append_swap_trailing_pieces(tx, token_inputs, pieces) do
     Enum.reduce_while(0..1, {:ok, tx}, fn i, {:ok, acc_tx} ->
-      counterparty_script_bin =
+      counterparty_idx = 1 - i
+      counterparty_locking_bin =
         token_inputs
-        |> Enum.at(1 - i)
+        |> Enum.at(counterparty_idx)
         |> Map.fetch!(:locking_script)
         |> Script.to_binary()
 
-      piece_param = Enum.at(pieces, i)
-      preceding_tx = Map.fetch!(piece_param, :preceding_tx)
-      asset_idx = Map.fetch!(piece_param, :asset_output_index)
+      case extract_stas3_asset_tail(counterparty_locking_bin) do
+        nil ->
+          {:halt, {:error, :counterparty_not_stas3_shaped}}
 
-      with {:ok, trailing_bytes} <-
-             Stas3Pieces.encode_atomic_swap_pieces(
-               counterparty_script_bin,
-               preceding_tx,
-               [asset_idx]
-             ),
-           {:ok, updated_tx} <-
-             splice_trailing_into_input(acc_tx, i, trailing_bytes) do
-        {:cont, {:ok, updated_tx}}
-      else
-        {:error, _} = err -> {:halt, err}
+        counterparty_tail ->
+          counterparty_vout =
+            tx.inputs
+            |> Enum.at(counterparty_idx)
+            |> Map.fetch!(:source_tx_out_index)
+
+          counterparty_preceding_tx =
+            pieces |> Enum.at(counterparty_idx) |> Map.fetch!(:preceding_tx)
+
+          counterparty_pieces =
+            split_preceding_tx_by_asset_tail(counterparty_preceding_tx, counterparty_tail)
+
+          trailing_bytes =
+            minimal_numeric_push(counterparty_vout) <>
+              Enum.reduce(counterparty_pieces, <<>>, fn p, acc -> acc <> pushdata(p) end) <>
+              minimal_numeric_push(length(counterparty_pieces)) <>
+              pushdata(counterparty_tail) <>
+              minimal_numeric_push(1)
+
+          case splice_swap_trailing_in_place_of_tx_type(acc_tx, i, trailing_bytes) do
+            {:ok, updated_tx} -> {:cont, {:ok, updated_tx}}
+            {:error, _} = err -> {:halt, err}
+          end
       end
     end)
   end
 
-  # PREPEND (not append) the trailing-piece block to the unlocking
-  # script. Push ordering in the unlocking script matters: items are
-  # pushed bottom-up. The canonical engine starts the locking script
-  # with the §10.2 P2MPKH redeem-buffer parser, which reads OP_SIZE on
-  # the TOP of stack — that slot must be the §7 no-auth (empty) push
-  # for non-MPKH inputs. If the piece block were appended, the head
-  # piece would end up on top, the parser would mis-classify it as a
-  # long redeem buffer, and downstream `OP_DUP OP_2 OP_ADD OP_ROLL`
-  # would overflow. Prepending places the piece block at the BOTTOM
-  # (consumed later by the §9.5 piece consumer), with the §7 slots on
-  # top in their original order.
-  defp splice_trailing_into_input(tx, input_index, trailing_bytes) do
+  # Extract the asset-script tail from a STAS 3.0 locking script:
+  # everything after `[OP_DATA_20 + 20B owner_pkh][var2 push]`. Returns
+  # nil if the script isn't STAS-shaped.
+  defp extract_stas3_asset_tail(<<0x14, _owner::binary-size(20), rest::binary>>) do
+    case skip_one_push(rest) do
+      nil -> nil
+      remaining -> remaining
+    end
+  end
+
+  defp extract_stas3_asset_tail(_), do: nil
+
+  # Skip a single Bitcoin push opcode and return the remaining bytes.
+  defp skip_one_push(<<0x00, rest::binary>>), do: rest
+  defp skip_one_push(<<0x4F, rest::binary>>), do: rest
+
+  defp skip_one_push(<<op, rest::binary>>) when op >= 0x51 and op <= 0x60, do: rest
+
+  defp skip_one_push(<<len, body::binary-size(len), rest::binary>>)
+       when len >= 0x01 and len <= 0x4B,
+       do: rest
+
+  defp skip_one_push(<<0x4C, len, _body::binary-size(len), rest::binary>>), do: rest
+
+  defp skip_one_push(<<0x4D, len::little-16, _body::binary-size(len), rest::binary>>), do: rest
+
+  defp skip_one_push(<<0x4E, len::little-32, _body::binary-size(len), rest::binary>>), do: rest
+
+  defp skip_one_push(_), do: nil
+
+  # Split `preceding_tx` by every occurrence of `asset_tail`, returning
+  # the gap pieces in reverse-of-tx-order (last gap first, first gap
+  # last). Mirrors DXS `splitDstasPreviousTransactionByCounterpartyScript`
+  # + `.reverse()` from `input-builder.ts`.
+  #
+  # `do_split` builds the natural-order list with the last gap at the
+  # head (prepended each iteration); we then leave it as-is to match
+  # the engine's expected reverse-of-tx-order. (No additional
+  # `Enum.reverse` — that would put it back in natural order.)
+  defp split_preceding_tx_by_asset_tail(preceding_tx, asset_tail)
+       when byte_size(asset_tail) > 0 do
+    do_split(preceding_tx, asset_tail, [])
+  end
+
+  defp do_split(remaining, asset_tail, acc) do
+    case :binary.match(remaining, asset_tail) do
+      :nomatch ->
+        [remaining | acc]
+
+      {pos, len} ->
+        head = binary_part(remaining, 0, pos)
+        tail = binary_part(remaining, pos + len, byte_size(remaining) - pos - len)
+        do_split(tail, asset_tail, [head | acc])
+    end
+  end
+
+  # Minimal Bitcoin numeric push.
+  defp minimal_numeric_push(0), do: <<0x00>>
+  defp minimal_numeric_push(n) when n in 1..16, do: <<0x50 + n>>
+
+  defp minimal_numeric_push(n) when n >= 17 and n <= 127, do: <<0x01, n>>
+
+  defp minimal_numeric_push(n) when n >= 128 and n <= 0xFF, do: <<0x02, n, 0x00>>
+
+  # Encode `n` (must be > 0xFF) as a sign-bit-safe minimal little-endian
+  # script-num push.
+  defp minimal_numeric_push(n) when is_integer(n) and n > 0xFF do
+    bytes = encode_le_minimal(n)
+    <<byte_size(bytes), bytes::binary>>
+  end
+
+  defp encode_le_minimal(0), do: <<>>
+
+  defp encode_le_minimal(n) when n > 0 do
+    bytes = do_le_bytes(n, <<>>)
+    <<last>> = binary_part(bytes, byte_size(bytes) - 1, 1)
+
+    if Bitwise.band(last, 0x80) != 0 do
+      bytes <> <<0x00>>
+    else
+      bytes
+    end
+  end
+
+  defp do_le_bytes(0, acc), do: acc
+
+  defp do_le_bytes(n, acc) do
+    do_le_bytes(Bitwise.bsr(n, 8), acc <> <<Bitwise.band(n, 0xFF)>>)
+  end
+
+  # Standard Bitcoin pushdata framing.
+  defp pushdata(<<>>), do: <<0x00>>
+
+  defp pushdata(data) when byte_size(data) <= 75,
+    do: <<byte_size(data)::8, data::binary>>
+
+  defp pushdata(data) when byte_size(data) <= 255,
+    do: <<0x4C, byte_size(data)::8, data::binary>>
+
+  defp pushdata(data) when byte_size(data) <= 0xFFFF,
+    do: <<0x4D, byte_size(data)::little-16, data::binary>>
+
+  defp pushdata(data),
+    do: <<0x4E, byte_size(data)::little-32, data::binary>>
+
+  # Splice `trailing_bytes` into the unlocking script of `tx.inputs[idx]`
+  # in place of the bare txType chunk (the 5th-from-end push). The tail
+  # of the unlocking script is expected to be:
+  #
+  #   `[…§7 slots…][txType 1B][preimage][spendType 1B][signature][pubkey]`
+  defp splice_swap_trailing_in_place_of_tx_type(tx, input_index, trailing_bytes) do
     input = Enum.at(tx.inputs, input_index)
 
     case input.unlocking_script do
       %Script{} = existing ->
-        combined_bin = trailing_bytes <> Script.to_binary(existing)
+        existing_bin = Script.to_binary(existing)
 
-        case Script.from_binary(combined_bin) do
-          {:ok, %Script{} = combined} ->
-            {:ok, set_unlocking_script(tx, input_index, combined)}
+        with {:ok, before_bytes, _tx_type_bytes, after_bytes} <-
+               split_at_tx_type_chunk(existing_bin) do
+          combined_bin = before_bytes <> trailing_bytes <> after_bytes
 
-          {:error, _} = err ->
-            err
+          case Script.from_binary(combined_bin) do
+            {:ok, %Script{} = combined} ->
+              {:ok, set_unlocking_script(tx, input_index, combined)}
+
+            {:error, _} = err ->
+              err
+          end
         end
 
       _ ->
         {:error, :missing_unlocking_script}
     end
   end
+
+  # Walk the unlocking script and return (before_bytes, tx_type_chunk_bytes,
+  # after_bytes) where tx_type_chunk_bytes is the 5th-from-end chunk's
+  # serialised bytes. Assumes the last 5 chunks are
+  # [txType, preimage, spendType, sig, pubkey].
+  defp split_at_tx_type_chunk(bin) do
+    case parse_all_chunks(bin) do
+      {:ok, chunks} when length(chunks) >= 5 ->
+        tx_type_idx = length(chunks) - 5
+        before_chunks = Enum.take(chunks, tx_type_idx)
+        {tx_type_chunk, after_chunks} = List.pop_at(chunks, tx_type_idx)
+
+        before_bytes =
+          Enum.reduce(before_chunks, <<>>, fn {_, bytes}, acc -> acc <> bytes end)
+
+        {_, tx_type_bytes} = tx_type_chunk
+
+        after_bytes =
+          Enum.reduce(after_chunks, <<>>, fn {_, bytes}, acc -> acc <> bytes end)
+
+        {:ok, before_bytes, tx_type_bytes, after_bytes}
+
+      {:ok, chunks} ->
+        {:error, {:too_few_chunks, length(chunks)}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Walk Bitcoin script bytes returning a list of {opcode, full_chunk_bytes}.
+  defp parse_all_chunks(bin), do: parse_chunks_loop(bin, [])
+
+  defp parse_chunks_loop(<<>>, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp parse_chunks_loop(<<0x00, rest::binary>>, acc),
+    do: parse_chunks_loop(rest, [{0x00, <<0x00>>} | acc])
+
+  defp parse_chunks_loop(<<op, rest::binary>>, acc)
+       when (op >= 0x4F and op <= 0x60) and op != 0x50,
+       do: parse_chunks_loop(rest, [{op, <<op>>} | acc])
+
+  defp parse_chunks_loop(<<len, body::binary-size(len), rest::binary>>, acc)
+       when len >= 0x01 and len <= 0x4B do
+    chunk = <<len, body::binary>>
+    parse_chunks_loop(rest, [{len, chunk} | acc])
+  end
+
+  defp parse_chunks_loop(<<0x4C, len, body::binary-size(len), rest::binary>>, acc) do
+    chunk = <<0x4C, len, body::binary>>
+    parse_chunks_loop(rest, [{0x4C, chunk} | acc])
+  end
+
+  defp parse_chunks_loop(<<0x4D, len::little-16, body::binary-size(len), rest::binary>>, acc) do
+    chunk = <<0x4D, len::little-16, body::binary>>
+    parse_chunks_loop(rest, [{0x4D, chunk} | acc])
+  end
+
+  defp parse_chunks_loop(<<0x4E, len::little-32, body::binary-size(len), rest::binary>>, acc) do
+    chunk = <<0x4E, len::little-32, body::binary>>
+    parse_chunks_loop(rest, [{0x4E, chunk} | acc])
+  end
+
+  defp parse_chunks_loop(<<op, rest::binary>>, acc),
+    do: parse_chunks_loop(rest, [{op, <<op>>} | acc])
 
   @doc """
   Build a STAS3 swap flow transaction with auto-detected mode.

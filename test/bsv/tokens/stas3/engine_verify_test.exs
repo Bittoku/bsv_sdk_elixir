@@ -305,30 +305,61 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
     byte-diff investigation. The encoder/parser correctness is
     validated by the cross-SDK pin test.
     """
-    @tag :skip
-    # See the @doc above. The InvalidStackOperation root cause was
-    # fixed by prepending the trailing-piece block (mirrored from the
-    # Rust factory). The remaining OP_VERIFY failure in the
-    # back-to-genesis hash check is a separate issue; skip until that
-    # is investigated and fixed in a follow-up pass.
     test "swap-swap with pushdata-per-piece trailing is engine-validated" do
       {token_key_a, owner_a_pkh} = generate_keypair()
       {token_key_b, owner_b_pkh} = generate_keypair()
       {fee_key, fee_pkh} = generate_keypair()
       redemption_pkh = :binary.copy(<<0x22>>, 20)
 
-      # Both legs carry a swap action-data descriptor; the actual
-      # requested_script_hash / pkh values are placeholders here — the
-      # piece-array encoding test does not exercise their content.
-      swap = %{
-        requested_script_hash: :binary.copy(<<0xAB>>, 32),
-        requested_pkh: :binary.copy(<<0xCD>>, 20),
+      # Per spec §9.5:
+      #   - "Wanted asset is received at the output matching the
+      #     initiator's input index" → each input's swap.requested_pkh
+      #     MUST equal the matching destination's owner_pkh.
+      #   - requested_script_hash MUST be SHA256(counterparty's
+      #     locking-script tail) → locks in the counterparty's expected
+      #     asset script.
+      #
+      # Two-pass setup: build with placeholder swap, compute SHA256 of
+      # each locking script's tail, then rebuild with the real swaps.
+      dest_0_pkh = :binary.copy(<<0x44>>, 20)
+      dest_1_pkh = :binary.copy(<<0x55>>, 20)
+
+      placeholder_swap = %{
+        requested_script_hash: :binary.copy(<<0x00>>, 32),
+        requested_pkh: dest_0_pkh,
         rate_numerator: 1,
         rate_denominator: 1
       }
 
-      lock_a = stas3_swap_lock(owner_a_pkh, redemption_pkh, swap)
-      lock_b = stas3_swap_lock(owner_b_pkh, redemption_pkh, swap)
+      placeholder_a = stas3_swap_lock(owner_a_pkh, redemption_pkh, placeholder_swap)
+      placeholder_b = stas3_swap_lock(owner_b_pkh, redemption_pkh, placeholder_swap)
+
+      counterparty_hash_for_a =
+        BSV.Tokens.Script.Stas3Builder.compute_stas3_requested_script_hash(
+          BSV.Script.to_binary(placeholder_b)
+        )
+
+      counterparty_hash_for_b =
+        BSV.Tokens.Script.Stas3Builder.compute_stas3_requested_script_hash(
+          BSV.Script.to_binary(placeholder_a)
+        )
+
+      swap_a = %{
+        requested_script_hash: counterparty_hash_for_a,
+        requested_pkh: dest_0_pkh,
+        rate_numerator: 1,
+        rate_denominator: 1
+      }
+
+      swap_b = %{
+        requested_script_hash: counterparty_hash_for_b,
+        requested_pkh: dest_1_pkh,
+        rate_numerator: 1,
+        rate_denominator: 1
+      }
+
+      lock_a = stas3_swap_lock(owner_a_pkh, redemption_pkh, swap_a)
+      lock_b = stas3_swap_lock(owner_b_pkh, redemption_pkh, swap_b)
       fee_lock = p2pkh_lock(fee_pkh)
 
       # Build synthetic preceding txs whose HASH256 we then use as the
@@ -383,58 +414,11 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
 
       {:ok, tx} = Stas3.build_stas3_swap_swap_tx_with_pieces(config, pieces)
 
-      # ── Cross-SDK comparison surface ────────────────────────────────
-      # Print the raw trailing-block bytes (counterparty_script ‖
-      # piece_count ‖ piece_array, each as separate Bitcoin pushes)
-      # appended to input 0's unlocking script. Rust's parallel test
-      # `engine_accepts_swap_swap_with_trailing_pieces` produces the
-      # same byte-for-byte construction.
-      {:ok, raw_trailing} =
-        BSV.Tokens.Script.Stas3Pieces.encode_atomic_swap_pieces(
-          BSV.Script.to_binary(lock_b),
-          preceding_a,
-          [0]
-        )
-
-      raw_hex = Base.encode16(raw_trailing, case: :lower)
-      raw_prefix_hex = String.slice(raw_hex, 0, 160)
-
-      IO.puts(
-        "[swap-swap engine_verify] input 0 raw trailing block " <>
-          "(first 80B hex): #{raw_prefix_hex}"
-      )
-
-      # Structural invariants the encoder fix guarantees: the trailing
-      # block is `pushdata(counterparty_script) ‖ piece_count(1B) ‖
-      # piece_array` where each piece is length-prefixed (1B length +
-      # body). The counterparty_script field uses Bitcoin pushdata
-      # framing so the parser can recover its length unambiguously.
-      cp_bytes = BSV.Script.to_binary(lock_b)
-      assert {:ok, %{counterparty_script: ^cp_bytes, piece_count: 2, pieces: pieces}} =
-               BSV.Tokens.Script.Stas3Pieces.parse(raw_trailing, 1)
-
-      # (Earlier length-prefixed `split_pieces/2` assertion removed — under
-      # spec v0.2.3 pieces are independent pushdata pushes, not a
-      # length-prefixed blob, so the assertion is obsolete. Re-introduce
-      # an equivalent cross-SDK byte-identity check during Task D when
-      # this test is unskipped + re-pinned against the canonical engine.)
-      _ = pieces
-
-      # Engine outcome: the encoder fix unblocks the consumption loop
-      # but downstream shape checks remain. We surface the actual
-      # interpreter response so cross-SDK alignment is observable.
-      result0 = EngineVerify.verify(tx, 0, lock_a, 5_000)
-      result1 = EngineVerify.verify(tx, 1, lock_b, 5_000)
-
-      IO.puts("[swap-swap engine_verify] input 0 result: #{inspect(result0)}")
-      IO.puts("[swap-swap engine_verify] input 1 result: #{inspect(result1)}")
-
-      # Post-fix the failure is a deterministic downstream engine-shape
-      # error (`:invalid_split_range`) — symmetric to Rust's
-      # `NumberTooSmall`. The original 0x20-separator desync produced
-      # `:invalid_stack_operation` / `:eval_false` instead.
-      assert match?({:error, _}, result0) or result0 == :ok
-      assert match?({:error, _}, result1) or result1 == :ok
+      # Engine acceptance: with the DXS-aligned witness layout (DXS's
+      # `prepareMergeInfo` shape spliced in place of slot-18 txType),
+      # the canonical engine should accept both inputs.
+      assert :ok = EngineVerify.verify(tx, 0, lock_a, 5_000)
+      assert :ok = EngineVerify.verify(tx, 1, lock_b, 5_000)
     end
   end
 end
