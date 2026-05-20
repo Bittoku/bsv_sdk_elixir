@@ -386,7 +386,7 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
             private_key: token_key_b
           }
         ],
-        fee_txid: :crypto.strong_rand_bytes(32),
+        fee_txid: :binary.copy(<<0xAA>>, 32),
         fee_vout: 2,
         fee_satoshis: 50_000,
         fee_locking_script: fee_lock,

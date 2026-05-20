@@ -1040,7 +1040,13 @@ defmodule BSV.Tokens.Factory.Stas3 do
       {:ok, chunks} when length(chunks) >= 5 ->
         tx_type_idx = length(chunks) - 5
         before_chunks = Enum.take(chunks, tx_type_idx)
-        {tx_type_chunk, after_chunks} = List.pop_at(chunks, tx_type_idx)
+        tx_type_chunk = Enum.at(chunks, tx_type_idx)
+        # IMPORTANT: `Enum.drop(chunks, tx_type_idx + 1)` returns the
+        # chunks AFTER txType (preimage, spendType, sig, pubkey). Using
+        # `List.pop_at` here would return the whole list minus the
+        # popped item — i.e. would duplicate the §7 slots BEFORE the
+        # splice point.
+        after_chunks = Enum.drop(chunks, tx_type_idx + 1)
 
         before_bytes =
           Enum.reduce(before_chunks, <<>>, fn {_, bytes}, acc -> acc <> bytes end)
