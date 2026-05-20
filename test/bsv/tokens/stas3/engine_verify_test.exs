@@ -291,22 +291,26 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
     OP_SWAP OP_3 OP_PICK OP_CAT OP_10 OP_ROLL OP_CAT OP_ENDIF` block,
     driven by a decrementing `piece_count` counter.
 
-    **Status (2026-05-21):** the encoder produces byte-identical output
-    across the Rust + Elixir SDKs (see `real STAS 3.0 locking-script
-    fixture (cross-SDK pin)` in `stas3_pieces_test.exs`), and the
-    canonical engine accepts the non-piece transfer / split / atomic-swap
-    flows. Under this synthetic swap-swap-with-pieces scenario the
-    engine still rejects with `InvalidStackOperation` (Rust mirror
-    reports `index 2147483647 against stack size 28` — a counter
-    underflow indicative of a deeper stack-shape mismatch in the
-    preceding-tx layout or witness wiring before the piece block).
-    Tracked as a follow-up; the encoder/parser correctness is already
+    **Wiring fix (2026-05-21):** the trailing-piece block is now
+    **prepended** to the unlocking script (not appended), so the §7
+    no-auth empty push remains on top of stack when the locking script's
+    §10.2 P2MPKH redeem-buffer parser runs. With append, the head piece
+    was misclassified as a long redeem buffer, OP_SPLIT'd into chunks,
+    and the downstream `OP_DUP OP_2 OP_ADD OP_ROLL` overflowed.
+
+    **Remaining failure (2026-05-21):** the Rust mirror now progresses
+    past the P2MPKH parser and fails deeper at OP_VERIFY in a HASH256
+    chain — the back-to-genesis check (HASH256 of the reconstructed
+    preceding_tx vs the input's `prev_txid`) — needs reconstruction
+    byte-diff investigation. The encoder/parser correctness is
     validated by the cross-SDK pin test.
     """
     @tag :skip
-    # See the @doc above. Skip until the deeper engine-acceptance issue
-    # for swap-swap-with-pieces is investigated and fixed in a separate
-    # pass.
+    # See the @doc above. The InvalidStackOperation root cause was
+    # fixed by prepending the trailing-piece block (mirrored from the
+    # Rust factory). The remaining OP_VERIFY failure in the
+    # back-to-genesis hash check is a separate issue; skip until that
+    # is investigated and fixed in a follow-up pass.
     test "swap-swap with pushdata-per-piece trailing is engine-validated" do
       {token_key_a, owner_a_pkh} = generate_keypair()
       {token_key_b, owner_b_pkh} = generate_keypair()

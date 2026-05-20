@@ -874,12 +874,23 @@ defmodule BSV.Tokens.Factory.Stas3 do
     end)
   end
 
+  # PREPEND (not append) the trailing-piece block to the unlocking
+  # script. Push ordering in the unlocking script matters: items are
+  # pushed bottom-up. The canonical engine starts the locking script
+  # with the §10.2 P2MPKH redeem-buffer parser, which reads OP_SIZE on
+  # the TOP of stack — that slot must be the §7 no-auth (empty) push
+  # for non-MPKH inputs. If the piece block were appended, the head
+  # piece would end up on top, the parser would mis-classify it as a
+  # long redeem buffer, and downstream `OP_DUP OP_2 OP_ADD OP_ROLL`
+  # would overflow. Prepending places the piece block at the BOTTOM
+  # (consumed later by the §9.5 piece consumer), with the §7 slots on
+  # top in their original order.
   defp splice_trailing_into_input(tx, input_index, trailing_bytes) do
     input = Enum.at(tx.inputs, input_index)
 
     case input.unlocking_script do
       %Script{} = existing ->
-        combined_bin = Script.to_binary(existing) <> trailing_bytes
+        combined_bin = trailing_bytes <> Script.to_binary(existing)
 
         case Script.from_binary(combined_bin) do
           {:ok, %Script{} = combined} ->
