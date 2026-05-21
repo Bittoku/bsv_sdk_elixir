@@ -1,5 +1,46 @@
 # Changelog
 
+## v2.0.0 — 2026-05-21
+
+### ⚠ BREAKING CHANGES
+
+- **STAS 3.0 base template swapped to the canonical v0.1 / spec v0.2.3
+  engine.** The stale 2812-byte template in `Stas3Builder` has been
+  replaced with the 2899-byte engine from
+  `github.com/stassso/STAS-3-script-templates` (SHA-256
+  `5c659f5f3abdad612c4bfd19b6034f2df0c0bcef1af1ca928d0f5a34ac3ee371`).
+  `@stas3_base_template_len` is bumped 2812 → 2899. Transactions built
+  against the old template are not compatible; rebuild and re-sign with
+  the new SDK before broadcasting (12fd204).
+- **§9.5 piece-array encoder rewritten to option-3 wire format.** Each
+  piece is now emitted as a separate `OP_PUSHDATA` with `piece_count`
+  encoded as a minimal numeric opcode (`OP_1`..`OP_16`) per DXS's
+  `ScriptBuilder.addNumber` convention. The 127-byte per-piece limit
+  is removed (the engine reads pieces via `OP_PUSHDATA` directly, so
+  larger pieces are now valid) (12fd204).
+- **Swap-swap factory witness layout DXS-aligned.** The trailing
+  piece-array block now occupies the slot-18 (txType) position in the
+  unlocking script per DXS's `prepareMergeInfo` shape:
+  `[counterparty_vout, piece_1..piece_N, piece_count,
+  counterparty_asset_tail, 1]`. Required for the canonical engine's
+  back-to-genesis hash check to pass (5af0c3d, 6fa5e15, 01423de).
+
+### Bug Fixes
+
+- **STAS 3.0 swap-swap engine_verify now passes.** Layered fixes:
+  prepended (not appended) trailing-piece block, full DXS-aligned
+  witness layout, replaced a `List.pop_at`/`Enum.drop` splice bug that
+  was duplicating §7 slots in the unlocking script, and corrected the
+  test's destination defaults (`freezable: false`). 1072/1072 mix
+  tests green (5af0c3d, 6fa5e15, 01423de, a658f73).
+- Cross-SDK pin test re-enabled against the new canonical template;
+  byte-identical Rust ↔ Elixir output verified (12fd204).
+
+### Internal / Chores
+
+- Swap-swap engine_verify test uses deterministic 32-byte private keys,
+  enabling byte-diff debugging across SDK boundaries (a658f73).
+
 ## v1.5.1 — 2026-05-17
 
 ### Bug Fixes
