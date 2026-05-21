@@ -52,6 +52,16 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
     {key, pkh}
   end
 
+  # Build a keypair from fixed 32-byte secret material. Used by the
+  # cross-SDK byte-diff swap-swap test so Rust and Elixir factories
+  # see identical inputs.
+  defp fixed_keypair(<<_::binary-size(32)>> = raw) do
+    {:ok, key} = PrivateKey.from_bytes(raw)
+    pubkey = PrivateKey.to_public_key(key) |> PublicKey.compress()
+    pkh = Crypto.hash160(pubkey.point)
+    {key, pkh}
+  end
+
   defp default_dest(owner_pkh, redemption_pkh, satoshis, opts \\ []) do
     %Stas3OutputParams{
       satoshis: satoshis,
@@ -306,9 +316,12 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
     validated by the cross-SDK pin test.
     """
     test "swap-swap with pushdata-per-piece trailing is engine-validated" do
-      {token_key_a, owner_a_pkh} = generate_keypair()
-      {token_key_b, owner_b_pkh} = generate_keypair()
-      {fee_key, fee_pkh} = generate_keypair()
+      # Deterministic keys for cross-SDK byte-diff debugging. With RFC6979
+      # signing + identical fixtures, Rust and Elixir factories must produce
+      # byte-identical unlocking scripts. Any divergence localizes the bug.
+      {token_key_a, owner_a_pkh} = fixed_keypair(:binary.copy(<<0x11>>, 32))
+      {token_key_b, owner_b_pkh} = fixed_keypair(:binary.copy(<<0x22>>, 32))
+      {fee_key, fee_pkh} = fixed_keypair(:binary.copy(<<0x33>>, 32))
       redemption_pkh = :binary.copy(<<0x22>>, 20)
 
       # Per spec §9.5:
@@ -392,15 +405,23 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
         fee_locking_script: fee_lock,
         fee_private_key: fee_key,
         destinations: [
+          # NOTE: `freezable: false` is required for engine acceptance — the
+          # canonical engine rejects unlocks whose destinations have
+          # `freezable=true` without a matching service-field push.
+          # Stas3OutputParams defaults `freezable: true`, but the matching
+          # Rust test sets it to false via the `dest()` helper, so both
+          # sides must agree to produce byte-identical outputs.
           %BSV.Tokens.Stas3OutputParams{
             satoshis: 5_000,
             owner_pkh: :binary.copy(<<0x44>>, 20),
-            redemption_pkh: redemption_pkh
+            redemption_pkh: redemption_pkh,
+            freezable: false
           },
           %BSV.Tokens.Stas3OutputParams{
             satoshis: 5_000,
             owner_pkh: :binary.copy(<<0x55>>, 20),
-            redemption_pkh: redemption_pkh
+            redemption_pkh: redemption_pkh,
+            freezable: false
           }
         ],
         spend_type: :transfer,
