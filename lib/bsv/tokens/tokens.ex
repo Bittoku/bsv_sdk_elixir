@@ -23,9 +23,14 @@ defmodule BSV.Tokens do
   defdelegate read_locking_script(script), to: BSV.Tokens.Script.Reader
   defdelegate is_stas(script), to: BSV.Tokens.Script.Reader
 
-  # BTG factory delegations
+  # BTG factory delegations.
+  # Experimental / not ready for production use — hidden from the public docs.
+  @doc false
   defdelegate build_btg_transfer_tx(config), to: BSV.Tokens.Factory.StasBtg
+  @doc false
   defdelegate build_btg_split_tx(config), to: BSV.Tokens.Factory.StasBtg
+  @doc false
   defdelegate build_btg_merge_tx(config), to: BSV.Tokens.Factory.StasBtg
+  @doc false
   defdelegate build_btg_checkpoint_tx(config), to: BSV.Tokens.Factory.StasBtg
 end

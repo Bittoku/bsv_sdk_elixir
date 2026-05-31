@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.0.1 — 2026-06-01
+
+### Docs
+
+- **STAS-BTG hidden from the public docs.** The STAS-BTG modules
+  (`Factory.StasBtg`, `Script.StasBtgBuilder`, `Template.StasBtg`,
+  `Template.StasBtgCheckpoint`) plus the BTG-specific `Tokens.Proof` and the
+  experimental `Tokens.Lineage` validator are now `@moduledoc false`, and the
+  four `build_btg_*` delegates on `BSV.Tokens` are `@doc false`. STAS-BTG is
+  experimental / not ready for production use and no longer appears on Hex.pm.
+  No functional change — the modules remain callable; only documentation
+  visibility changed. The `:stas_btg` value in `ScriptType.t()` is retained
+  since the reader still classifies on-chain STAS-BTG scripts.
+
 ## v2.0.0 — 2026-05-21
 
 ### ⚠ BREAKING CHANGES

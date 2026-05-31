@@ -1,40 +1,36 @@
 defmodule BSV.Tokens.Lineage do
-  @moduledoc """
-  Off-chain lineage validator for STAS tokens.
-
-  ## Status: EXPERIMENTAL — not functional for STAS 3.0
-
-  This validator classifies only `:stas` / `:stas_btg` / `:p2pkh` script
-  types; a STAS 3.0 ancestor hits the fallthrough clause and returns an
-  error. It also does NOT model the STAS 3.0 issuance-set invariant
-  (`Vin[0] == protoID`) or `illegal_roots` taint propagation. Do not rely
-  on it to validate STAS 3.0 lineage — the authoritative STAS 3.0
-  lineage/validity model lives in the athanor indexer. Reviving this for
-  STAS 3.0 requires adding a `:stas3` clause.
-
-  Walks the ancestor chain of a token UTXO back to the genesis (contract)
-  transaction, verifying that every hop is a legitimate STAS token transfer
-  or issuance.
-
-  ## Usage
-
-      validator = BSV.Tokens.Lineage.new(contract_txid, redemption_pkh)
-      {:ok, validator} = BSV.Tokens.Lineage.validate(validator, utxo_txid, vout, tx_fetcher_fn)
-
-  The `tx_fetcher_fn` is a function `(txid_binary -> {:ok, raw_tx} | {:error, reason})`.
-
-  ## Security Notice — Trust Model
-
-  This validator verifies the **chain of txids and script types** back to genesis,
-  and confirms that `sha256d(raw_tx) == expected_txid` for each hop. However, it
-  does **not** verify transaction signatures. It trusts the `tx_fetcher` to return
-  authentic transaction data.
-
-  If the `tx_fetcher` is backed by an untrusted source, an attacker could supply
-  fabricated transactions with valid txid hashes but forged scripts/outputs. For
-  maximum security, combine lineage validation with SPV proof verification (Merkle
-  path against a trusted block header) to confirm each transaction was actually mined.
-  """
+  # Off-chain lineage validator for STAS tokens.
+  #
+  # Status: EXPERIMENTAL — not functional for STAS 3.0. Hidden from the public docs.
+  #
+  # This validator classifies only `:stas` / `:stas_btg` / `:p2pkh` script
+  # types; a STAS 3.0 ancestor hits the fallthrough clause and returns an
+  # error. It also does NOT model the STAS 3.0 issuance-set invariant
+  # (`Vin[0] == protoID`) or `illegal_roots` taint propagation. Do not rely
+  # on it to validate STAS 3.0 lineage — the authoritative STAS 3.0
+  # lineage/validity model lives in the athanor indexer. Reviving this for
+  # STAS 3.0 requires adding a `:stas3` clause.
+  #
+  # Walks the ancestor chain of a token UTXO back to the genesis (contract)
+  # transaction, verifying that every hop is a legitimate STAS token transfer
+  # or issuance.
+  #
+  # Usage:
+  #
+  #     validator = BSV.Tokens.Lineage.new(contract_txid, redemption_pkh)
+  #     {:ok, validator} = BSV.Tokens.Lineage.validate(validator, utxo_txid, vout, tx_fetcher_fn)
+  #
+  # The `tx_fetcher_fn` is a function `(txid_binary -> {:ok, raw_tx} | {:error, reason})`.
+  #
+  # Security Notice — Trust Model: this validator verifies the chain of txids and
+  # script types back to genesis, and confirms that `sha256d(raw_tx) == expected_txid`
+  # for each hop. However, it does NOT verify transaction signatures. It trusts the
+  # `tx_fetcher` to return authentic transaction data. If the `tx_fetcher` is backed
+  # by an untrusted source, an attacker could supply fabricated transactions with
+  # valid txid hashes but forged scripts/outputs. For maximum security, combine
+  # lineage validation with SPV proof verification (Merkle path against a trusted
+  # block header) to confirm each transaction was actually mined.
+  @moduledoc false
 
   alias BSV.{Crypto, Transaction}
   alias BSV.Tokens.Script.Reader

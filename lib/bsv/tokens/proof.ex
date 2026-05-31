@@ -1,13 +1,14 @@
 defmodule BSV.Tokens.Proof do
-  @moduledoc """
-  Prev-TX split utility for Back-to-Genesis (BTG) proof system.
-
-  Provides `split_tx_around_output/2`, which splits a raw serialized transaction
-  into three byte segments around a specified output index. The spender pushes
-  these three segments in the unlocking script so that the BTG locking script
-  can reconstruct the previous transaction, verify its hash against the outpoint
-  txid, and inspect the output's locking script for legitimacy.
-  """
+  # Prev-TX split utility for the Back-to-Genesis (BTG) proof system.
+  #
+  # Provides `split_tx_around_output/2`, which splits a raw serialized transaction
+  # into three byte segments around a specified output index. The spender pushes
+  # these three segments in the unlocking script so that the BTG locking script
+  # can reconstruct the previous transaction, verify its hash against the outpoint
+  # txid, and inspect the output's locking script for legitimacy.
+  #
+  # Experimental / not ready for production use — hidden from the public docs.
+  @moduledoc false
 
   alias BSV.Crypto
 

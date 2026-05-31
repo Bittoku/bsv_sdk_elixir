@@ -1,10 +1,11 @@
 defmodule BSV.Tokens.Factory.StasBtg do
-  @moduledoc """
-  STAS-BTG transaction factories.
-
-  Pure functions that build complete, signed transactions for STAS-BTG token
-  operations: transfer, split, merge, and checkpoint.
-  """
+  # STAS-BTG transaction factories.
+  #
+  # Pure functions that build complete, signed transactions for STAS-BTG token
+  # operations: transfer, split, merge, and checkpoint.
+  #
+  # Experimental / not ready for production use — hidden from the public docs.
+  @moduledoc false
 
   alias BSV.{Crypto, Script, PrivateKey, PublicKey}
   alias BSV.Transaction

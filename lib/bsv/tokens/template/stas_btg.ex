@@ -1,9 +1,10 @@
 defmodule BSV.Tokens.Template.StasBtg do
-  @moduledoc """
-  STAS-BTG unlocking script template (Path A — BTG proof).
-
-  Produces unlocking scripts: `<sig> <pubkey> <prefix> <output> <suffix> OP_TRUE`
-  """
+  # STAS-BTG unlocking script template (Path A — BTG proof).
+  #
+  # Produces unlocking scripts: `<sig> <pubkey> <prefix> <output> <suffix> OP_TRUE`
+  #
+  # Experimental / not ready for production use — hidden from the public docs.
+  @moduledoc false
 
   @behaviour BSV.Transaction.Template
 
@@ -89,11 +90,12 @@ defmodule BSV.Tokens.Template.StasBtg do
 end
 
 defmodule BSV.Tokens.Template.StasBtgCheckpoint do
-  @moduledoc """
-  STAS-BTG checkpoint unlocking script template (Path B — Checkpoint attestation).
-
-  Produces unlocking scripts: `<sig_owner> <pubkey_owner> <sig_issuer> <pubkey_issuer> OP_FALSE`
-  """
+  # STAS-BTG checkpoint unlocking script template (Path B — Checkpoint attestation).
+  #
+  # Produces unlocking scripts: `<sig_owner> <pubkey_owner> <sig_issuer> <pubkey_issuer> OP_FALSE`
+  #
+  # Experimental / not ready for production use — hidden from the public docs.
+  @moduledoc false
 
   @behaviour BSV.Transaction.Template
 

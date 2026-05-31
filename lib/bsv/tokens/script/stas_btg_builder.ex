@@ -1,18 +1,18 @@
 defmodule BSV.Tokens.Script.StasBtgBuilder do
-  @moduledoc """
-  Builder for STAS-BTG (Back-to-Genesis) locking scripts.
-
-  The STAS-BTG template extends the standard STAS v2 template with a
-  dual-path spending mechanism:
-
-  ## Path A — BTG Proof (OP_IF branch)
-  The unlocking script pushes `<sig> <pubkey> <prefix> <output> <suffix> OP_TRUE`.
-  The BTG preamble verifies the prev-TX proof.
-
-  ## Path B — Checkpoint Attestation (OP_ELSE branch)
-  The unlocking script pushes `<sig_owner> <pubkey_owner> <sig_issuer> <pubkey_issuer> OP_FALSE`.
-  The checkpoint gate verifies the issuer's co-signature.
-  """
+  # Builder for STAS-BTG (Back-to-Genesis) locking scripts.
+  #
+  # The STAS-BTG template extends the standard STAS v2 template with a
+  # dual-path spending mechanism:
+  #
+  # Path A — BTG Proof (OP_IF branch): the unlocking script pushes
+  #   `<sig> <pubkey> <prefix> <output> <suffix> OP_TRUE`; the BTG preamble
+  #   verifies the prev-TX proof.
+  # Path B — Checkpoint Attestation (OP_ELSE branch): the unlocking script
+  #   pushes `<sig_owner> <pubkey_owner> <sig_issuer> <pubkey_issuer> OP_FALSE`;
+  #   the checkpoint gate verifies the issuer's co-signature.
+  #
+  # Experimental / not ready for production use — hidden from the public docs.
+  @moduledoc false
 
   alias BSV.Script
 

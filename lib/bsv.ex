@@ -48,7 +48,6 @@ defmodule BSV do
   - `BSV.Tokens.Script.Reader` — script classification
   - `BSV.Tokens.Factory.Stas` — STAS transaction factories
   - `BSV.Tokens.Factory.Stas3` — STAS3 transaction factories
-  - `BSV.Tokens.Lineage` — off-chain lineage validation
 
   ### Transports
   - `BSV.ARC.Client` — ARC transaction broadcaster

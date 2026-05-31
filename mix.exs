@@ -4,7 +4,7 @@ defmodule BSV.MixProject do
   def project do
     [
       app: :bsv_sdk,
-      version: "2.0.0",
+      version: "2.0.1",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -81,14 +81,10 @@ defmodule BSV.MixProject do
           BSV.Tokens.TokenId,
           BSV.Tokens.Script.Reader,
           BSV.Tokens.Script.StasBuilder,
-          BSV.Tokens.Script.StasBtgBuilder,
           BSV.Tokens.Script.Stas3Builder,
           BSV.Tokens.Factory.Contract,
           BSV.Tokens.Factory.Stas,
-          BSV.Tokens.Factory.StasBtg,
-          BSV.Tokens.Factory.Stas3,
-          BSV.Tokens.Lineage,
-          BSV.Tokens.Proof
+          BSV.Tokens.Factory.Stas3
         ],
         Transports: [BSV.ARC.Client, BSV.ARC.Config, BSV.JungleBus.Client, BSV.JungleBus.Config]
       ]
