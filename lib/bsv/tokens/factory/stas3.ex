@@ -13,6 +13,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Tokens.Error
   alias BSV.Tokens.SigningKey
   alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates}
+  alias BSV.Tokens.ScriptFlags
   alias BSV.Tokens.Stas3.Validate, as: Stas3Validate
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
   alias BSV.Tokens.Factory.Stas3.WitnessBuilder
@@ -1234,12 +1235,15 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp build_stas3_dest_outputs(destinations) do
     Enum.reduce_while(destinations, {:ok, []}, fn dest, {:ok, acc} ->
-      case Stas3Builder.build_stas3_locking_script(
+      flags = dest_flags(dest)
+
+      case Stas3Builder.build_stas3_locking_script_with_engine(
              dest.owner_pkh,
              dest.redemption_pkh,
              dest.action_data,
              dest.frozen,
-             dest.freezable,
+             flags,
+             ScriptFlags.engine(flags),
              dest.service_fields,
              dest.optional_data
            ) do
@@ -1251,6 +1255,19 @@ defmodule BSV.Tokens.Factory.Stas3 do
           {:halt, error}
       end
     end)
+  end
+
+  # Full capability flags for a destination (spec §15). STAS 3.0 flags are
+  # immutable across a spend, so the caller sets each output's flags to match
+  # its input; the builder encodes all four bits and selects the engine
+  # revision (0.0.11 when NFT/AUGMENTABLE is set, else 0.0.9).
+  defp dest_flags(dest) do
+    %ScriptFlags{
+      freezable: Map.get(dest, :freezable, false),
+      confiscatable: Map.get(dest, :confiscatable, false),
+      nft: Map.get(dest, :nft, false),
+      augmentable: Map.get(dest, :augmentable, false)
+    }
   end
 
   # Run a per-input validator across every token input; halt on first failure.

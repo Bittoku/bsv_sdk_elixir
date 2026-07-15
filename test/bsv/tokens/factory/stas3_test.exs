@@ -2100,4 +2100,50 @@ defmodule BSV.Tokens.Factory.Stas3Test do
       assert Stas3.build_stas3_base_tx(config) == {:error, :nft_not_mergeable}
     end
   end
+
+  # ---- §15 capability-flag propagation to transfer outputs ----
+
+  describe "flag propagation to outputs (§15)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "NFT transfer output re-encodes the NFT flag on the 0.0.11 engine",
+         %{owner: o, redemption: r} do
+      nft_dest = %Stas3OutputParams{
+        satoshis: 5_000,
+        owner_pkh: :binary.copy(<<0x33>>, 20),
+        redemption_pkh: r,
+        frozen: false,
+        freezable: false,
+        nft: true,
+        service_fields: [],
+        optional_data: []
+      }
+
+      {:ok, tx} = Stas3.build_stas3_base_tx(nft_base_config([nft_input(o, r, 5_000)], [nft_dest]))
+
+      parsed =
+        Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+
+      assert parsed.script_type == :stas3
+      {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+      assert flags.nft
+      assert parsed.stas3.engine == :v0_0_11
+    end
+
+    test "plain transfer output stays on the 0.0.9 engine", %{owner: o, redemption: r} do
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([plain_input(o, r, 10_000)], [plain_dest(10_000, r)])
+        )
+
+      parsed =
+        Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+
+      {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+      refute flags.nft
+      assert parsed.stas3.engine == :v0_0_9
+    end
+  end
 end
