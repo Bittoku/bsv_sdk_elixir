@@ -12,7 +12,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Script.Address
   alias BSV.Tokens.Error
   alias BSV.Tokens.SigningKey
-  alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates}
+  alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates, Reader}
   alias BSV.Tokens.ScriptFlags
   alias BSV.Tokens.Stas3.Validate, as: Stas3Validate
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
@@ -390,6 +390,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
             )
 
           with {:ok, stas3_outputs} <- build_stas3_dest_outputs(config.destinations) do
+            # Spec §6.4 / §15.2: if a consumed NFT+AUGMENTABLE input carries an
+            # augmentation directive, append its data to the sole token output
+            # (the NFT invariant guarantees exactly one) before signing so the
+            # input signatures commit to the appended tail.
+            stas3_outputs = apply_augment_directive(stas3_outputs, config)
+
             tx = %Transaction{
               inputs: token_inputs ++ [fee_input],
               outputs: stas3_outputs
@@ -1268,6 +1274,87 @@ defmodule BSV.Tokens.Factory.Stas3 do
       nft: Map.get(dest, :nft, false),
       augmentable: Map.get(dest, :augmentable, false)
     }
+  end
+
+  # ── §6.4 / §15.2 augmentation directive ──────────────────────────────
+
+  @doc """
+  Verify that a produced token output satisfies the augmentation covenant
+  (spec §6.4 / §15.2) for a spent input.
+
+  The `build_stas3_base_tx` transfer path *auto-appends* the directive so its
+  output is covenant-correct by construction; use this to check a spend built
+  some other way. If `input_locking_script` carries an active augmentation
+  directive — an NFT + AUGMENTABLE frame whose `var2` is `{:augment, data}` —
+  then `output_locking_script` MUST end with the directive data.
+  """
+  @spec verify_augment_directive_appended(binary(), binary()) ::
+          :ok | {:error, :directive_not_appended}
+  def verify_augment_directive_appended(input_locking_script, output_locking_script)
+      when is_binary(input_locking_script) and is_binary(output_locking_script) do
+    case augment_directive_for_script(input_locking_script) do
+      {:ok, data} ->
+        if binary_suffix?(output_locking_script, data),
+          do: :ok,
+          else: {:error, :directive_not_appended}
+
+      :none ->
+        :ok
+    end
+  end
+
+  # The active augmentation directive carried by a spend's inputs, if any:
+  # `data` when a consumed NFT+AUGMENTABLE input's var2 is `{:augment, data}`,
+  # else nil. NFT frames are single-input, so at most one is ever active.
+  defp active_augment_directive(token_inputs) do
+    Enum.find_value(token_inputs, nil, fn ti ->
+      case augment_directive_for_script(Script.to_binary(ti.locking_script)) do
+        {:ok, data} -> data
+        :none -> nil
+      end
+    end)
+  end
+
+  # `{:ok, data}` when a locking script decodes as an NFT+AUGMENTABLE frame whose
+  # var2 is an augmentation directive; `:none` otherwise (inert / absent).
+  defp augment_directive_for_script(script_bin) do
+    case Reader.read_locking_script(script_bin) do
+      %{script_type: :stas3, stas3: %{flags: flags, action_data_parsed: {:augment, data}}} ->
+        case ScriptFlags.decode(flags) do
+          {:ok, %ScriptFlags{nft: true, augmentable: true}} -> {:ok, data}
+          _ -> :none
+        end
+
+      _ ->
+        :none
+    end
+  end
+
+  # Apply the augmentation covenant to a transfer's outputs: append the active
+  # directive data to the first (sole) token output. No-op unless this is a
+  # plain transfer carrying an active directive.
+  defp apply_augment_directive(outputs, config) do
+    if Map.get(config, :spend_type) == :transfer do
+      case active_augment_directive(config.token_inputs) do
+        nil -> outputs
+        data -> append_to_first_output(outputs, data)
+      end
+    else
+      outputs
+    end
+  end
+
+  defp append_to_first_output([first | rest], data) do
+    {:ok, script} = Script.from_binary(Script.to_binary(first.locking_script) <> data)
+    [%{first | locking_script: script} | rest]
+  end
+
+  defp append_to_first_output([], _data), do: []
+
+  defp binary_suffix?(bin, suffix) do
+    s = byte_size(suffix)
+    b = byte_size(bin)
+    b >= s and binary_part(bin, b - s, s) == suffix
   end
 
   # Run a per-input validator across every token input; halt on first failure.

@@ -102,6 +102,11 @@ defmodule BSV.Tokens.Script.Stas3Builder do
         {_, {:swap, %{} = fields}} ->
           script <> push_data(encode_swap_action_data(fields))
 
+        # Augmentation directive (spec §6.4 / §15.2): action byte 0x03 followed
+        # by the data the next spend of an NFT+AUGMENTABLE frame must append.
+        {_, {:augment, data}} ->
+          script <> push_data(<<0x03>> <> data)
+
         {_, {:custom, bytes}} ->
           script <> push_data(bytes)
       end

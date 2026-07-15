@@ -319,6 +319,12 @@ defmodule BSV.Tokens.Script.Reader do
             <<>> ->
               nil
 
+            # Augmentation directive (spec §6.4 / §15.2): action byte 0x03
+            # followed by ≥1 data byte. Checked before the generic fallback; a
+            # bare 0x03 (no data) is inert and falls through to :custom.
+            <<0x03, rest::binary>> when byte_size(rest) >= 1 ->
+              {:augment, rest}
+
             other ->
               {:custom, other}
           end

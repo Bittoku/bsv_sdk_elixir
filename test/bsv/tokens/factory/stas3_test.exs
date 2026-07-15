@@ -76,6 +76,43 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     script
   end
 
+  # Build a genuine NFT+AUGMENTABLE locking script (flags 0x0C, engine 0.0.11)
+  # carrying an augmentation directive in var2 (spec §6.4 / §15.2).
+  defp make_stas3_augment_locking(owner_pkh, redemption_pkh, data) do
+    flags = %BSV.Tokens.ScriptFlags{nft: true, augmentable: true}
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner_pkh,
+        redemption_pkh,
+        {:augment, data},
+        false,
+        flags,
+        :v0_0_11,
+        [],
+        []
+      )
+
+    script
+  end
+
+  # Un-augmented NFT+AUGMENTABLE output script (engine 0.0.11), owner 0x33.
+  defp nft_aug_base(redemption) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        :binary.copy(<<0x33>>, 20),
+        redemption,
+        nil,
+        false,
+        %BSV.Tokens.ScriptFlags{nft: true, augmentable: true},
+        :v0_0_11,
+        [],
+        []
+      )
+
+    Script.to_binary(script)
+  end
+
   defp plain_dest(sats, redemption, owner \\ :binary.copy(<<0x33>>, 20)) do
     %Stas3OutputParams{
       satoshis: sats,
@@ -2144,6 +2181,61 @@ defmodule BSV.Tokens.Factory.Stas3Test do
       {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
       refute flags.nft
       assert parsed.stas3.engine == :v0_0_9
+    end
+  end
+
+  # ---- §6.4 / §15.2 directive-append covenant ----
+
+  describe "directive-append (§6.4 / §15.2)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "spending an augment-directive NFT appends the data to the output once",
+         %{owner: o, redemption: r} do
+      data = <<0x05, 0xDE, 0xAD, 0xBE, 0xEF, 0x99>>
+
+      input = %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 5_000,
+        locking_script: make_stas3_augment_locking(o, r, data),
+        private_key: PrivateKey.generate()
+      }
+
+      out = %Stas3OutputParams{
+        satoshis: 5_000,
+        owner_pkh: :binary.copy(<<0x33>>, 20),
+        redemption_pkh: r,
+        frozen: false,
+        freezable: false,
+        nft: true,
+        augmentable: true,
+        service_fields: [],
+        optional_data: []
+      }
+
+      {:ok, tx} = Stas3.build_stas3_base_tx(nft_base_config([input], [out]))
+      out_bin = Script.to_binary(Enum.at(tx.outputs, 0).locking_script)
+
+      # The output is exactly the un-augmented script with the directive data
+      # appended once at its tail.
+      assert out_bin == nft_aug_base(r) <> data
+    end
+
+    test "verify_augment_directive_appended: ok / missing / none", %{owner: o, redemption: r} do
+      data = <<0x03, 0xAA, 0xBB>>
+      input = Script.to_binary(make_stas3_augment_locking(o, r, data))
+      base = nft_aug_base(r)
+
+      assert Stas3.verify_augment_directive_appended(input, base <> data) == :ok
+
+      assert Stas3.verify_augment_directive_appended(input, base) ==
+               {:error, :directive_not_appended}
+
+      # A plain NFT input carries no active directive → ok regardless of output.
+      plain = Script.to_binary(make_stas3_nft_locking(o, r))
+      assert Stas3.verify_augment_directive_appended(plain, base) == :ok
     end
   end
 end
