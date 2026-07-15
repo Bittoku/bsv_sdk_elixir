@@ -56,6 +56,38 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     script
   end
 
+  # Build a genuine NFT locking script: flags bit 2 (0x04) on the 0.0.11 engine
+  # (spec §15.1 / §15.6).
+  defp make_stas3_nft_locking(owner_pkh, redemption_pkh) do
+    flags = %BSV.Tokens.ScriptFlags{nft: true}
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner_pkh,
+        redemption_pkh,
+        nil,
+        false,
+        flags,
+        :v0_0_11,
+        [],
+        []
+      )
+
+    script
+  end
+
+  defp plain_dest(sats, redemption, owner \\ :binary.copy(<<0x33>>, 20)) do
+    %Stas3OutputParams{
+      satoshis: sats,
+      owner_pkh: owner,
+      redemption_pkh: redemption,
+      frozen: false,
+      freezable: false,
+      service_fields: [],
+      optional_data: []
+    }
+  end
+
   # ---- Issue flow tests ----
 
   test "issue txs structure" do
@@ -1916,7 +1948,10 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     # preimage byte-for-byte.
     locking_bin = Script.to_binary(no_auth_input.source_output.locking_script)
     sats = no_auth_input.source_output.satoshis
-    {:ok, recomputed_preimage} = BSV.Transaction.Sighash.calc_preimage(tx, 0, locking_bin, 0x41, sats)
+
+    {:ok, recomputed_preimage} =
+      BSV.Transaction.Sighash.calc_preimage(tx, 0, locking_bin, 0x41, sats)
+
     assert preimage_bytes == recomputed_preimage
 
     # Input 1: regular signed leg — witness ‖ <sig> <pubkey>.
@@ -1992,5 +2027,77 @@ defmodule BSV.Tokens.Factory.Stas3Test do
 
     assert out_parsed.script_type == :stas3
     assert out_parsed.stas3.owner == issuer_pkh
+  end
+
+  # ---- §15.1 NFT one-output enforcement ----
+
+  defp nft_input(owner, redemption, sats \\ 10_000) do
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: sats,
+      locking_script: make_stas3_nft_locking(owner, redemption),
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  defp plain_input(owner, redemption, sats \\ 10_000) do
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 1,
+      satoshis: sats,
+      locking_script: make_stas3_locking(owner, redemption),
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  defp nft_base_config(inputs, dests) do
+    %{
+      token_inputs: inputs,
+      fee_txid: dummy_hash(),
+      fee_vout: 2,
+      fee_satoshis: 50_000,
+      fee_locking_script: p2pkh_script(PrivateKey.generate()),
+      fee_private_key: PrivateKey.generate(),
+      destinations: dests,
+      spend_type: :transfer,
+      fee_rate: 500
+    }
+  end
+
+  describe "NFT one-output enforcement (§15.1)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "split of an NFT input is rejected", %{owner: o, redemption: r} do
+      config = nft_base_config([nft_input(o, r)], [plain_dest(4_000, r), plain_dest(6_000, r)])
+      assert Stas3.build_stas3_split_tx(config) == {:error, :nft_not_splittable}
+    end
+
+    test "merge with an NFT input is rejected", %{owner: o, redemption: r} do
+      config =
+        nft_base_config(
+          [plain_input(o, r, 3_000), nft_input(o, r, 7_000)],
+          [plain_dest(10_000, r)]
+        )
+
+      assert Stas3.build_stas3_merge_tx(config) == {:error, :nft_not_mergeable}
+    end
+
+    test "transfer of an NFT with multiple outputs is rejected", %{owner: o, redemption: r} do
+      config = nft_base_config([nft_input(o, r)], [plain_dest(4_000, r), plain_dest(6_000, r)])
+      assert Stas3.build_stas3_base_tx(config) == {:error, :nft_output_count}
+    end
+
+    test "transfer of an NFT alongside a second input is rejected", %{owner: o, redemption: r} do
+      config =
+        nft_base_config(
+          [nft_input(o, r, 5_000), plain_input(o, r, 5_000)],
+          [plain_dest(10_000, r)]
+        )
+
+      assert Stas3.build_stas3_base_tx(config) == {:error, :nft_not_mergeable}
+    end
   end
 end

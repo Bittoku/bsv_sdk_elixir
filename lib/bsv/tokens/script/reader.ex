@@ -26,6 +26,7 @@ defmodule BSV.Tokens.Script.Stas3Fields do
           owner: <<_::160>>,
           redemption: <<_::160>>,
           flags: binary(),
+          engine: BSV.Tokens.Script.Engine.revision() | nil,
           action_data_raw: binary() | nil,
           action_data_parsed: BSV.Tokens.ActionData.t() | nil,
           swap_descriptor: BSV.Tokens.SwapDescriptor.t() | nil,
@@ -37,6 +38,7 @@ defmodule BSV.Tokens.Script.Stas3Fields do
   defstruct [
     :owner,
     :redemption,
+    :engine,
     flags: <<>>,
     action_data_raw: nil,
     action_data_parsed: nil,
@@ -63,14 +65,11 @@ defmodule BSV.Tokens.Script.Reader do
   @moduledoc "Script reader for parsing STAS and STAS 3.0 locking scripts."
 
   alias BSV.Tokens.TokenId
-  alias BSV.Tokens.Script.{ParsedScript, StasFields, Stas3Fields}
+  alias BSV.Tokens.Script.{ParsedScript, StasFields, Stas3Fields, Engine}
 
   @stas_v2_min_len 1432
   @stas_v2_redemption_offset 1411
   @stas3_base_prefix <<0x6D, 0x82, 0x73, 0x63>>
-  # Length of the canonical STAS 3.0 engine base template; the previous
-  # 2812-byte length-prefixed engine is deprecated.
-  @stas3_base_template_len 2899
 
   @doc "Parse a locking script binary and classify it."
   @spec read_locking_script(binary()) :: ParsedScript.t()
@@ -273,11 +272,14 @@ defmodule BSV.Tokens.Script.Reader do
   defp parse_stas3(<<0x14, owner::binary-size(20), rest::binary>>) do
     {:ok, action_data_raw, after_action} = read_push_data(rest)
 
-    # Skip the base template to find OP_RETURN
-    op_return_pos = @stas3_base_template_len - 1
+    # Locate the engine body by exact template match — engine-agnostic, so this
+    # works for both 0.0.9 and 0.0.11 (spec §15.6) — then read the trailing
+    # metadata that follows it: redemption PKH, flags, and service fields.
+    case Engine.detect(after_action) do
+      {:ok, {engine, engine_len}} ->
+        after_op_return =
+          binary_part(after_action, engine_len, byte_size(after_action) - engine_len)
 
-    case after_action do
-      <<_template::binary-size(op_return_pos), 0x6A, after_op_return::binary>> ->
         items = parse_push_data_items(after_op_return)
 
         redemption =
@@ -343,6 +345,7 @@ defmodule BSV.Tokens.Script.Reader do
             owner: owner,
             redemption: redemption,
             flags: flags,
+            engine: engine,
             action_data_raw: action_data_raw,
             action_data_parsed: action_data_parsed,
             swap_descriptor: swap_descriptor,
@@ -352,7 +355,7 @@ defmodule BSV.Tokens.Script.Reader do
           }
         }
 
-      _ ->
+      :error ->
         %ParsedScript{script_type: :unknown}
     end
   end

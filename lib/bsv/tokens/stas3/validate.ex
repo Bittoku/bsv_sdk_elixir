@@ -89,6 +89,26 @@ defmodule BSV.Tokens.Stas3.Validate do
     end
   end
 
+  # ── §15.1 NFT ────────────────────────────────────────────────────────
+
+  @doc """
+  Whether a token input decodes as a STAS 3.0 NFT — its locking script parses as
+  a STAS 3.0 UTXO whose `flags` have the NFT bit (`0x04`, spec §15.1) set.
+
+  A non-STAS or unparseable input returns `false`: the §15 restrictions apply
+  only to genuine NFT UTXOs, and any other malformed input is caught by the
+  downstream builder's own validation.
+  """
+  @spec nft?(token_input()) :: boolean()
+  def nft?(token_input) do
+    with {:ok, fields} <- parsed_stas3_fields(token_input),
+         {:ok, flags} <- ScriptFlags.decode(fields.flags) do
+      flags.nft
+    else
+      _ -> false
+    end
+  end
+
   # ── §9.4 Swap cancellation ───────────────────────────────────────────
 
   @doc """

@@ -353,6 +353,21 @@ defmodule BSV.Tokens.Factory.Stas3 do
       config.token_inputs == [] or length(config.token_inputs) > 2 ->
         {:error, Error.invalid_destination("STAS3 base tx requires 1 or 2 token inputs")}
 
+      # Spec §15.1: a plain-transfer spend consuming an NFT must consume exactly
+      # one STAS input (non-mergeable) and produce exactly one output
+      # (non-splittable). Only the transfer funnel is gated; swap (via its own
+      # validator) and confiscation carry their own output semantics and reject
+      # NFT inputs upstream.
+      Map.get(config, :spend_type) == :transfer and
+        Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) and
+          length(config.token_inputs) != 1 ->
+        {:error, :nft_not_mergeable}
+
+      Map.get(config, :spend_type) == :transfer and
+        Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) and
+          length(config.destinations) != 1 ->
+        {:error, :nft_output_count}
+
       true ->
         total_in = Enum.sum(Enum.map(config.token_inputs, & &1.satoshis))
         total_out = Enum.sum(Enum.map(config.destinations, & &1.satoshis))
@@ -503,6 +518,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
       length(config.destinations) < 1 or length(config.destinations) > 4 ->
         {:error, Error.invalid_destination("split requires 1-4 destinations")}
 
+      # Spec §15.1: an NFT is indivisible — splitting it is forbidden outright.
+      Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) ->
+        {:error, :nft_not_splittable}
+
       true ->
         build_stas3_base_tx(
           config
@@ -536,6 +555,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
       length(config.destinations) < 1 or length(config.destinations) > 2 ->
         {:error, Error.invalid_destination("merge requires 1-2 destinations")}
+
+      # Spec §15.1: an NFT is non-mergeable — reject if either input is an NFT.
+      Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) ->
+        {:error, :nft_not_mergeable}
 
       true ->
         # Two-input merge → §8.1 txType = :merge_2.
@@ -829,7 +852,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
   """
   @spec build_stas3_swap_swap_tx_with_pieces(
           base_config(),
-          [%{required(:preceding_tx) => binary(), required(:asset_output_index) => non_neg_integer()}]
+          [
+            %{
+              required(:preceding_tx) => binary(),
+              required(:asset_output_index) => non_neg_integer()
+            }
+          ]
         ) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_swap_swap_tx_with_pieces(config, pieces)
       when is_list(pieces) and length(pieces) == 2 do
@@ -839,7 +867,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   end
 
   def build_stas3_swap_swap_tx_with_pieces(_config, _pieces),
-    do: {:error, Error.invalid_destination("swap-swap with pieces requires exactly 2 piece params")}
+    do:
+      {:error, Error.invalid_destination("swap-swap with pieces requires exactly 2 piece params")}
 
   # Splice the spec §9.5 DXS-aligned trailing block IN PLACE OF the bare
   # txType byte at slot 18 for BOTH STAS inputs' unlocking scripts.
@@ -859,6 +888,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   defp append_swap_trailing_pieces(tx, token_inputs, pieces) do
     Enum.reduce_while(0..1, {:ok, tx}, fn i, {:ok, acc_tx} ->
       counterparty_idx = 1 - i
+
       counterparty_locking_bin =
         token_inputs
         |> Enum.at(counterparty_idx)
@@ -1075,7 +1105,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
     do: parse_chunks_loop(rest, [{0x00, <<0x00>>} | acc])
 
   defp parse_chunks_loop(<<op, rest::binary>>, acc)
-       when (op >= 0x4F and op <= 0x60) and op != 0x50,
+       when op >= 0x4F and op <= 0x60 and op != 0x50,
        do: parse_chunks_loop(rest, [{op, <<op>>} | acc])
 
   defp parse_chunks_loop(<<len, body::binary-size(len), rest::binary>>, acc)
