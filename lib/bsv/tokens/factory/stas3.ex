@@ -604,7 +604,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   """
   @spec build_stas3_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_confiscate_tx(config) do
-    with :ok <- validate_all(config.token_inputs, &Stas3Validate.confiscation/1) do
+    with :ok <- validate_all(config.token_inputs, &Stas3Validate.confiscation/1),
+         :ok <- reject_nft_spend_path(config.token_inputs) do
       # Confiscation respects the caller's `:tx_type` if provided; defaults
       # to `:regular` (txType byte 0) per §4 / §9.3 (no encoded restriction).
       build_stas3_base_tx(
@@ -640,7 +641,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
         {:error, Error.invalid_destination("swap cancellation requires exactly 1 token input")}
 
       true ->
-        with :ok <- Stas3Validate.swap_cancel(hd(config.token_inputs), config.destinations) do
+        with :ok <- reject_nft_spend_path(config.token_inputs),
+             :ok <- Stas3Validate.swap_cancel(hd(config.token_inputs), config.destinations) do
           build_stas3_base_tx(
             config
             |> Map.put(:spend_type, :swap_cancellation)
@@ -1388,11 +1390,26 @@ defmodule BSV.Tokens.Factory.Stas3 do
     end)
   end
 
+  # Spec §15: how the §15.1 one-output and §15.2 directive-append covenants
+  # interact with the swap (spendType 1) and confiscation (spendType 3) paths is
+  # not yet pinned, and those builders bypass the normal-transfer NFT guard.
+  # Refuse NFT inputs conservatively rather than risk an on-chain-invalid tx.
+  defp reject_nft_spend_path(token_inputs) do
+    if Enum.any?(token_inputs, &Stas3Validate.nft?/1),
+      do: {:error, :nft_spend_path_unsupported},
+      else: :ok
+  end
+
   # Validate swap inputs: exactly 2, none frozen
   defp validate_swap_inputs(token_inputs) do
     cond do
       length(token_inputs) != 2 ->
         {:error, Error.invalid_destination("swap requires exactly 2 token inputs")}
+
+      # Spec §15: NFT behaviour on the atomic-swap path (spendType 1) is not yet
+      # pinned; refuse NFT legs conservatively.
+      Enum.any?(token_inputs, &Stas3Validate.nft?/1) ->
+        {:error, :nft_spend_path_unsupported}
 
       true ->
         frozen =

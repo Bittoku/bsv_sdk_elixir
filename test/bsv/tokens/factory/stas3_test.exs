@@ -2315,4 +2315,54 @@ defmodule BSV.Tokens.Factory.Stas3Test do
       assert issued_output(result).stas3.action_data_parsed == {:augment, data}
     end
   end
+
+  # ---- §15 conservative swap/confiscation NFT guards ----
+
+  describe "swap/confiscation NFT guards (§15)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "confiscating an NFT (+confiscatable) input is rejected", %{owner: o, redemption: r} do
+      flags = %BSV.Tokens.ScriptFlags{nft: true, confiscatable: true}
+
+      {:ok, locking} =
+        Stas3Builder.build_stas3_locking_script_with_engine(
+          o,
+          r,
+          nil,
+          false,
+          flags,
+          :v0_0_11,
+          [],
+          []
+        )
+
+      input = %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 5_000,
+        locking_script: locking,
+        private_key: PrivateKey.generate()
+      }
+
+      config = nft_base_config([input], [plain_dest(5_000, r)])
+      assert Stas3.build_stas3_confiscate_tx(config) == {:error, :nft_spend_path_unsupported}
+    end
+
+    test "an NFT leg in an atomic swap is rejected", %{owner: o, redemption: r} do
+      config =
+        nft_base_config(
+          [nft_input(o, r, 5_000), plain_input(o, r, 5_000)],
+          [plain_dest(10_000, r)]
+        )
+
+      assert Stas3.build_stas3_swap_swap_tx(config) == {:error, :nft_spend_path_unsupported}
+    end
+
+    test "an NFT input in swap-cancellation is rejected", %{owner: o, redemption: r} do
+      config = nft_base_config([nft_input(o, r, 5_000)], [plain_dest(5_000, r)])
+      assert Stas3.build_stas3_swap_cancel_tx(config) == {:error, :nft_spend_path_unsupported}
+    end
+  end
 end
