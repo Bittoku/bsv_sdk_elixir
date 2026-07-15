@@ -122,4 +122,13 @@ defmodule BSV.Tokens.ScriptFlags do
   def service_field_count(%__MODULE__{freezable: f, confiscatable: c}) do
     if(f, do: 1, else: 0) + if c, do: 1, else: 0
   end
+
+  @doc """
+  The engine revision required to *issue* a token with these flags (0.0.11 if the
+  NFT or AUGMENTABLE bit is set, else 0.0.9 — spec §15.6).
+  """
+  @spec engine(t()) :: BSV.Tokens.Script.Engine.revision()
+  def engine(%__MODULE__{} = flags) do
+    BSV.Tokens.Script.Engine.select_engine(encode(flags))
+  end
 end
