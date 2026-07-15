@@ -28,7 +28,17 @@ defmodule BSV.Tokens.Factory.Stas3 do
           funding_locking_script: Script.t(),
           funding_private_key: PrivateKey.t() | nil,
           funding_key: SigningKey.t() | nil,
-          outputs: [%{satoshis: non_neg_integer(), owner_pkh: <<_::160>>, freezable: boolean()}],
+          outputs: [
+            %{
+              required(:satoshis) => non_neg_integer(),
+              required(:owner_pkh) => <<_::160>>,
+              optional(:freezable) => boolean(),
+              optional(:confiscatable) => boolean(),
+              optional(:nft) => boolean(),
+              optional(:augmentable) => boolean(),
+              optional(:action_data) => BSV.Tokens.ActionData.t() | nil
+            }
+          ],
           fee_rate: non_neg_integer()
         }
 
@@ -1220,21 +1230,32 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp build_stas3_outputs(outputs, redemption_pkh) do
     Enum.reduce_while(outputs, {:ok, []}, fn out, {:ok, acc} ->
-      case Stas3Builder.build_stas3_locking_script(
-             out.owner_pkh,
-             redemption_pkh,
-             nil,
-             false,
-             Map.get(out, :freezable, true),
-             [],
-             []
-           ) do
-        {:ok, script} ->
-          output = %Output{satoshis: out.satoshis, locking_script: script}
-          {:cont, {:ok, acc ++ [output]}}
+      flags = %ScriptFlags{
+        freezable: Map.get(out, :freezable, true),
+        confiscatable: Map.get(out, :confiscatable, false),
+        nft: Map.get(out, :nft, false),
+        augmentable: Map.get(out, :augmentable, false)
+      }
 
-        error ->
-          {:halt, error}
+      # Reject a standalone AUGMENTABLE bit at mint time (§15.2); encode the full
+      # flags byte and select the engine (0.0.11 for NFT/AUGMENTABLE). An
+      # optional `action_data` mints the token with a var2 directive (§6.4).
+      with :ok <- ScriptFlags.validate(flags),
+           {:ok, script} <-
+             Stas3Builder.build_stas3_locking_script_with_engine(
+               out.owner_pkh,
+               redemption_pkh,
+               Map.get(out, :action_data, nil),
+               false,
+               flags,
+               ScriptFlags.engine(flags),
+               [],
+               []
+             ) do
+        output = %Output{satoshis: out.satoshis, locking_script: script}
+        {:cont, {:ok, acc ++ [output]}}
+      else
+        {:error, _} = error -> {:halt, error}
       end
     end)
   end

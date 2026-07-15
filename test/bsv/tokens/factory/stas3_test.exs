@@ -125,6 +125,21 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     }
   end
 
+  defp issue_config(outputs) do
+    key = test_key()
+
+    %{
+      scheme: test_scheme(),
+      funding_txid: dummy_hash(),
+      funding_vout: 0,
+      funding_satoshis: 100_000,
+      funding_locking_script: p2pkh_script(key),
+      funding_private_key: key,
+      outputs: outputs,
+      fee_rate: 500
+    }
+  end
+
   # ---- Issue flow tests ----
 
   test "issue txs structure" do
@@ -2236,6 +2251,68 @@ defmodule BSV.Tokens.Factory.Stas3Test do
       # A plain NFT input carries no active directive → ok regardless of output.
       plain = Script.to_binary(make_stas3_nft_locking(o, r))
       assert Stas3.verify_augment_directive_appended(plain, base) == :ok
+    end
+  end
+
+  # ---- §15 issuance capability flags + var2 directive ----
+
+  defp issued_output(result) do
+    Reader.read_locking_script(
+      Script.to_binary(Enum.at(result.issue_tx.outputs, 0).locking_script)
+    )
+  end
+
+  describe "issuance capability flags (§15)" do
+    test "minting an NFT+AUGMENTABLE output uses the 0.0.11 engine with both flags" do
+      config =
+        issue_config([
+          %{
+            satoshis: 5_000,
+            owner_pkh: :binary.copy(<<0x11>>, 20),
+            freezable: false,
+            nft: true,
+            augmentable: true
+          }
+        ])
+
+      {:ok, result} = Stas3.build_stas3_issue_txs(config)
+      parsed = issued_output(result)
+      {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+      assert flags.nft and flags.augmentable
+      assert parsed.stas3.engine == :v0_0_11
+    end
+
+    test "minting an AUGMENTABLE-without-NFT output is rejected" do
+      config =
+        issue_config([
+          %{
+            satoshis: 5_000,
+            owner_pkh: :binary.copy(<<0x11>>, 20),
+            freezable: false,
+            augmentable: true
+          }
+        ])
+
+      assert Stas3.build_stas3_issue_txs(config) == {:error, :augmentable_requires_nft}
+    end
+
+    test "minting an NFT with an augment directive installs the var2 directive" do
+      data = <<0x04, 0x01, 0x02, 0x03, 0x04>>
+
+      config =
+        issue_config([
+          %{
+            satoshis: 5_000,
+            owner_pkh: :binary.copy(<<0x11>>, 20),
+            freezable: false,
+            nft: true,
+            augmentable: true,
+            action_data: {:augment, data}
+          }
+        ])
+
+      {:ok, result} = Stas3.build_stas3_issue_txs(config)
+      assert issued_output(result).stas3.action_data_parsed == {:augment, data}
     end
   end
 end
