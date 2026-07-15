@@ -105,19 +105,6 @@ defmodule BSV.Tokens.Factory.Stas3 do
     end
   end
 
-  # Derive an address string from a signing key (for change outputs).
-  # P2PKH: Base58Check-encoded PKH.
-  # P2MPKH: Not applicable for Base58 addresses — returns the PKH address of
-  # the first key as a fallback for change. In practice, issuance change should
-  # go back to the same locking script type, so we use locking_script_from_signing_key.
-  defp change_address_from_signing_key({:single, key}), do: change_address(key)
-
-  defp change_address_from_signing_key({:multi, _keys, _multisig} = _sk) do
-    # P2MPKH change uses the same multisig locking script, not a Base58 address.
-    # This function is only called for P2PKH; for P2MPKH, use locking_script_from_signing_key.
-    raise "use locking_script_from_signing_key for P2MPKH change outputs"
-  end
-
   # Add fee change output, dispatching on signing key type for the change script.
   defp add_fee_change_sk(tx, fee_satoshis, signing_key, fee_rate) do
     est_size = estimate_size(length(tx.inputs), tx.outputs) + 34
@@ -963,7 +950,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp skip_one_push(<<op, rest::binary>>) when op >= 0x51 and op <= 0x60, do: rest
 
-  defp skip_one_push(<<len, body::binary-size(len), rest::binary>>)
+  defp skip_one_push(<<len, _body::binary-size(len), rest::binary>>)
        when len >= 0x01 and len <= 0x4B,
        do: rest
 
