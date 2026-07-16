@@ -918,22 +918,36 @@ defmodule BSV.Tokens.Factory.Stas3 do
             |> Enum.at(counterparty_idx)
             |> Map.fetch!(:source_tx_out_index)
 
-          counterparty_preceding_tx =
-            pieces |> Enum.at(counterparty_idx) |> Map.fetch!(:preceding_tx)
+          counterparty_piece_params = Enum.at(pieces, counterparty_idx)
+          counterparty_preceding_tx = Map.fetch!(counterparty_piece_params, :preceding_tx)
+          counterparty_asset_index = Map.fetch!(counterparty_piece_params, :asset_output_index)
 
-          counterparty_pieces =
-            split_preceding_tx_by_asset_tail(counterparty_preceding_tx, counterparty_tail)
+          # Spec §9.5 back-to-genesis: the asset script must be excised from
+          # the SPECIFIC output the counterparty input spends
+          # (`asset_output_index`), not from every output whose tail happens
+          # to match. Deriving pieces from the wrong output would produce an
+          # invalid reconstruction for preceding txs with multiple STAS-like
+          # outputs (note 2231 §5).
+          case split_preceding_tx_at_output(
+                 counterparty_preceding_tx,
+                 counterparty_tail,
+                 counterparty_asset_index
+               ) do
+            {:ok, counterparty_pieces} ->
+              trailing_bytes =
+                minimal_numeric_push(counterparty_vout) <>
+                  Enum.reduce(counterparty_pieces, <<>>, fn p, acc -> acc <> pushdata(p) end) <>
+                  minimal_numeric_push(length(counterparty_pieces)) <>
+                  pushdata(counterparty_tail) <>
+                  minimal_numeric_push(1)
 
-          trailing_bytes =
-            minimal_numeric_push(counterparty_vout) <>
-              Enum.reduce(counterparty_pieces, <<>>, fn p, acc -> acc <> pushdata(p) end) <>
-              minimal_numeric_push(length(counterparty_pieces)) <>
-              pushdata(counterparty_tail) <>
-              minimal_numeric_push(1)
+              case splice_swap_trailing_in_place_of_tx_type(acc_tx, i, trailing_bytes) do
+                {:ok, updated_tx} -> {:cont, {:ok, updated_tx}}
+                {:error, _} = err -> {:halt, err}
+              end
 
-          case splice_swap_trailing_in_place_of_tx_type(acc_tx, i, trailing_bytes) do
-            {:ok, updated_tx} -> {:cont, {:ok, updated_tx}}
-            {:error, _} = err -> {:halt, err}
+            {:error, _} = err ->
+              {:halt, err}
           end
       end
     end)
@@ -969,29 +983,35 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp skip_one_push(_), do: nil
 
-  # Split `preceding_tx` by every occurrence of `asset_tail`, returning
-  # the gap pieces in reverse-of-tx-order (last gap first, first gap
-  # last). Mirrors DXS `splitDstasPreviousTransactionByCounterpartyScript`
-  # + `.reverse()` from `input-builder.ts`.
-  #
-  # `do_split` builds the natural-order list with the last gap at the
-  # head (prepended each iteration); we then leave it as-is to match
-  # the engine's expected reverse-of-tx-order. (No additional
-  # `Enum.reverse` — that would put it back in natural order.)
-  defp split_preceding_tx_by_asset_tail(preceding_tx, asset_tail)
+  # Split `preceding_tx` around the `asset_tail` occurrence that belongs to the
+  # output at `asset_output_index`, returning the two gap pieces
+  # `[after, before]` in reverse-of-tx-order (later gap first) — the order the
+  # canonical engine expects. Mirrors DXS
+  # `splitDstasPreviousTransactionByCounterpartyScript` + `.reverse()`, but
+  # excises ONLY the named asset output's script rather than every tail match,
+  # so a preceding tx with multiple STAS-like outputs reconstructs correctly
+  # (note 2231 §5).
+  @spec split_preceding_tx_at_output(binary(), binary(), non_neg_integer()) ::
+          {:ok, [binary()]} | {:error, term()}
+  defp split_preceding_tx_at_output(preceding_tx, asset_tail, asset_output_index)
        when byte_size(asset_tail) > 0 do
-    do_split(preceding_tx, asset_tail, [])
-  end
+    with {:ok, {script_start, script_len}} <-
+           Stas3Pieces.locate_output_script(preceding_tx, asset_output_index) do
+      script_bytes = binary_part(preceding_tx, script_start, script_len)
 
-  defp do_split(remaining, asset_tail, acc) do
-    case :binary.match(remaining, asset_tail) do
-      :nomatch ->
-        [remaining | acc]
+      case :binary.match(script_bytes, asset_tail) do
+        :nomatch ->
+          {:error, {:asset_tail_not_in_output, asset_output_index}}
 
-      {pos, len} ->
-        head = binary_part(remaining, 0, pos)
-        tail = binary_part(remaining, pos + len, byte_size(remaining) - pos - len)
-        do_split(tail, asset_tail, [head | acc])
+        {rel_pos, len} ->
+          abs_pos = script_start + rel_pos
+          before = binary_part(preceding_tx, 0, abs_pos)
+
+          after_tail =
+            binary_part(preceding_tx, abs_pos + len, byte_size(preceding_tx) - abs_pos - len)
+
+          {:ok, [after_tail, before]}
+      end
     end
   end
 

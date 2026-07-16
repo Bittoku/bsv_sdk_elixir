@@ -110,6 +110,68 @@ defmodule BSV.Tokens.SwapDescriptorTest do
     end
   end
 
+  describe "note 2231 §4 — nested-hash first-byte disambiguation round trips" do
+    # A nested {:swap, _} whose requested_script_hash begins with a byte that
+    # collides with the passive (0x00) or frozen (0x02) markers must still
+    # encode+decode losslessly, because nested-swap detection is length-based.
+    for lead <- [0x00, 0x01, 0x02, 0xFF] do
+      test "nested swap with requested_script_hash first byte 0x#{Integer.to_string(lead, 16)}" do
+        lead = unquote(lead)
+
+        inner = %SwapDescriptor{
+          requested_script_hash: <<lead>> <> :binary.copy(<<0x77>>, 31),
+          receive_addr: :binary.copy(<<0x66>>, 20),
+          rate_numerator: 7,
+          rate_denominator: 9,
+          next: nil
+        }
+
+        d = %{leaf() | next: {:swap, inner}}
+        bin = SwapDescriptor.to_var2_bytes(d)
+
+        assert byte_size(bin) == 61 + 60
+        assert {:ok, ^d} = SwapDescriptor.parse(bin)
+        assert {:ok, %SwapDescriptor{next: {:swap, ^inner}}} = SwapDescriptor.parse(bin)
+      end
+    end
+
+    test "two-level nested swap whose inner AND deepest hashes begin with 0x00/0x02" do
+      deepest = %SwapDescriptor{
+        requested_script_hash: <<0x02>> <> :binary.copy(<<0x88>>, 31),
+        receive_addr: :binary.copy(<<0x99>>, 20),
+        rate_numerator: 30,
+        rate_denominator: 31,
+        next: nil
+      }
+
+      inner = %SwapDescriptor{
+        requested_script_hash: <<0x00>> <> :binary.copy(<<0xAA>>, 31),
+        receive_addr: :binary.copy(<<0xBB>>, 20),
+        rate_numerator: 20,
+        rate_denominator: 21,
+        next: {:swap, deepest}
+      }
+
+      d = %{leaf() | next: {:swap, inner}}
+      bin = SwapDescriptor.to_var2_bytes(d)
+
+      assert byte_size(bin) == 181
+      assert {:ok, ^d} = SwapDescriptor.parse(bin)
+    end
+
+    test "short 0x00-led passive payload still decodes as passive (not swap)" do
+      d = %{leaf() | next: {:passive, :binary.copy(<<0x00>>, 40)}}
+      bin = SwapDescriptor.to_var2_bytes(d)
+      assert {:ok, %SwapDescriptor{next: {:passive, payload}}} = SwapDescriptor.parse(bin)
+      assert payload == :binary.copy(<<0x00>>, 40)
+    end
+
+    test "encoder rejects an oversized passive payload that would alias a nested swap" do
+      d = %{leaf() | next: {:passive, :binary.copy(<<0x00>>, 59)}}
+      assert_raise ArgumentError, fn -> SwapDescriptor.to_var2_bytes(d) end
+    end
+  end
+
   describe "snapshot vectors (cross-SDK validation)" do
     test "three-level recursive var2 hex is pinned" do
       bin = SwapDescriptor.to_var2_bytes(three_level_chain())

@@ -216,11 +216,49 @@ defmodule BSV.Script.InterpreterTest do
     end
 
     test "OP_LSHIFT negative shift errors" do
-      assert {:error, :invalid_shift} = verify_asm("OP_1 OP_1NEGATE", "OP_LSHIFT", flags: [:utxo_after_genesis])
+      assert {:error, :invalid_shift} =
+               verify_asm("OP_1 OP_1NEGATE", "OP_LSHIFT", flags: [:utxo_after_genesis])
     end
 
     test "OP_RSHIFT negative shift errors" do
-      assert {:error, :invalid_shift} = verify_asm("OP_1 OP_1NEGATE", "OP_RSHIFT", flags: [:utxo_after_genesis])
+      assert {:error, :invalid_shift} =
+               verify_asm("OP_1 OP_1NEGATE", "OP_RSHIFT", flags: [:utxo_after_genesis])
+    end
+  end
+
+  describe "unlock/lock OP_RETURN separation (note 2231 §1)" do
+    # A post-Genesis OP_RETURN in the UNLOCKING script must halt only the
+    # unlocking script; it must NOT carry `halt` into locking-script
+    # evaluation and thereby skip it. Otherwise a spend could leave a truthy
+    # item, run OP_RETURN, and bypass the locking conditions entirely.
+    test "OP_1 OP_RETURN unlock does not bypass an OP_0 locking script" do
+      assert {:error, :eval_false} =
+               verify_asm("OP_1 OP_RETURN", "OP_0", flags: [:utxo_after_genesis])
+    end
+
+    test "unlock OP_RETURN cannot satisfy a locking script that must fail" do
+      # Locking script requires the top item to equal 2; unlock leaves 1 then
+      # OP_RETURNs. The lock must still run and reject.
+      assert {:error, _} =
+               verify_asm("OP_1 OP_RETURN", "OP_2 OP_EQUAL", flags: [:utxo_after_genesis])
+    end
+
+    test "legitimate locking-script trailing OP_RETURN metadata still verifies" do
+      {:ok, unlock} = Script.from_asm("OP_1")
+      # OP_1 (from unlock) is truthy on the stack; the lock appends an inert
+      # OP_RETURN <metadata> tail exactly as STAS 3.0 templates do.
+      lock = %Script{chunks: [op: 0x6A, pushdata: <<0xDE, 0xAD, 0xBE, 0xEF>>]}
+      assert :ok = Interpreter.verify(unlock, lock, flags: [:utxo_after_genesis])
+    end
+
+    test "locking script may OP_VERIFY the unlock item before its OP_RETURN tail" do
+      {:ok, unlock} = Script.from_asm("OP_1")
+      lock = %Script{chunks: [op: 0x69, op: 0x51, op: 0x6A, pushdata: <<0xCA, 0xFE>>]}
+      assert :ok = Interpreter.verify(unlock, lock, flags: [:utxo_after_genesis])
+    end
+
+    test "pre-Genesis OP_RETURN in the unlocking script still hard-fails" do
+      assert {:error, :op_return} = verify_asm("OP_1 OP_RETURN", "OP_0", flags: [])
     end
   end
 
@@ -298,7 +336,11 @@ defmodule BSV.Script.InterpreterTest do
     end
 
     test "OP_3DUP" do
-      assert :ok = verify_asm("", "OP_1 OP_2 OP_3 OP_3DUP OP_3 OP_EQUALVERIFY OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1")
+      assert :ok =
+               verify_asm(
+                 "",
+                 "OP_1 OP_2 OP_3 OP_3DUP OP_3 OP_EQUALVERIFY OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1"
+               )
     end
 
     test "OP_3DUP underflow" do
@@ -315,7 +357,11 @@ defmodule BSV.Script.InterpreterTest do
 
     test "OP_2OVER" do
       # [1 2 3 4] -> [1 2 3 4 1 2] - copies 3rd and 4th from top
-      assert :ok = verify_asm("", "OP_1 OP_2 OP_3 OP_4 OP_2OVER OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1")
+      assert :ok =
+               verify_asm(
+                 "",
+                 "OP_1 OP_2 OP_3 OP_4 OP_2OVER OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1"
+               )
     end
 
     test "OP_2OVER underflow" do
@@ -324,7 +370,11 @@ defmodule BSV.Script.InterpreterTest do
 
     test "OP_2ROT" do
       # [1 2 3 4 5 6] -> [3 4 5 6 1 2]
-      assert :ok = verify_asm("", "OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_2ROT OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1")
+      assert :ok =
+               verify_asm(
+                 "",
+                 "OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_2ROT OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1"
+               )
     end
 
     test "OP_2ROT underflow" do
@@ -333,7 +383,11 @@ defmodule BSV.Script.InterpreterTest do
 
     test "OP_2SWAP" do
       # [1 2 3 4] -> [3 4 1 2]
-      assert :ok = verify_asm("", "OP_1 OP_2 OP_3 OP_4 OP_2SWAP OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1")
+      assert :ok =
+               verify_asm(
+                 "",
+                 "OP_1 OP_2 OP_3 OP_4 OP_2SWAP OP_2 OP_EQUALVERIFY OP_1 OP_EQUALVERIFY OP_1"
+               )
     end
 
     test "OP_2SWAP underflow" do
@@ -518,7 +572,9 @@ defmodule BSV.Script.InterpreterTest do
       # Split at position > length
       {:ok, unlock} = Script.from_hex("01aa" <> "55")
       {:ok, lock} = Script.from_hex("7f51")
-      assert {:error, :invalid_split_range} = Interpreter.verify(unlock, lock, flags: [:utxo_after_genesis])
+
+      assert {:error, :invalid_split_range} =
+               Interpreter.verify(unlock, lock, flags: [:utxo_after_genesis])
     end
 
     test "OP_NUM2BIN" do
@@ -590,7 +646,9 @@ defmodule BSV.Script.InterpreterTest do
     test "OP_AND different sizes error" do
       {:ok, unlock} = Script.from_hex("01ff020f0f")
       {:ok, lock} = Script.from_hex("8451")
-      assert {:error, :invalid_operand_size} = Interpreter.verify(unlock, lock, flags: [:utxo_after_genesis])
+
+      assert {:error, :invalid_operand_size} =
+               Interpreter.verify(unlock, lock, flags: [:utxo_after_genesis])
     end
   end
 
@@ -606,12 +664,16 @@ defmodule BSV.Script.InterpreterTest do
 
     test "CHECKSIG with false result" do
       sighash_fn = fn _sig, _pubkey, _type -> {:ok, false} end
-      assert {:error, :eval_false} = verify_asm("OP_1 OP_1", "OP_CHECKSIG", sighash_fn: sighash_fn)
+
+      assert {:error, :eval_false} =
+               verify_asm("OP_1 OP_1", "OP_CHECKSIG", sighash_fn: sighash_fn)
     end
 
     test "CHECKSIG with empty sig pushes false" do
       sighash_fn = fn _sig, _pubkey, _type -> {:ok, true} end
-      assert {:error, :eval_false} = verify_asm("OP_0 OP_1", "OP_CHECKSIG", sighash_fn: sighash_fn)
+
+      assert {:error, :eval_false} =
+               verify_asm("OP_0 OP_1", "OP_CHECKSIG", sighash_fn: sighash_fn)
     end
 
     test "CHECKSIGVERIFY success" do
@@ -621,13 +683,16 @@ defmodule BSV.Script.InterpreterTest do
 
     test "CHECKSIGVERIFY failure" do
       sighash_fn = fn _sig, _pubkey, _type -> {:ok, false} end
-      assert {:error, :checksigverify_failed} = verify_asm("OP_1 OP_1", "OP_CHECKSIGVERIFY OP_1", sighash_fn: sighash_fn)
+
+      assert {:error, :checksigverify_failed} =
+               verify_asm("OP_1 OP_1", "OP_CHECKSIGVERIFY OP_1", sighash_fn: sighash_fn)
     end
 
     test "CHECKMULTISIG 1-of-1" do
       sighash_fn = fn _sig, _pubkey, _type -> {:ok, true} end
       # stack: dummy sig pubkey 1 1
-      assert :ok = verify_asm("OP_0 OP_1 OP_1 OP_1 OP_1", "OP_CHECKMULTISIG", sighash_fn: sighash_fn)
+      assert :ok =
+               verify_asm("OP_0 OP_1 OP_1 OP_1 OP_1", "OP_CHECKMULTISIG", sighash_fn: sighash_fn)
     end
 
     test "CHECKMULTISIG without sighash_fn" do
@@ -637,12 +702,17 @@ defmodule BSV.Script.InterpreterTest do
     test "CHECKMULTISIG invalid key count" do
       sighash_fn = fn _sig, _pubkey, _type -> {:ok, true} end
       # nkeys = -1
-      assert {:error, :invalid_pubkey_count} = verify_asm("OP_1NEGATE", "OP_CHECKMULTISIG", sighash_fn: sighash_fn)
+      assert {:error, :invalid_pubkey_count} =
+               verify_asm("OP_1NEGATE", "OP_CHECKMULTISIG", sighash_fn: sighash_fn)
     end
 
     test "CHECKMULTISIGVERIFY success" do
       sighash_fn = fn _sig, _pubkey, _type -> {:ok, true} end
-      assert :ok = verify_asm("OP_0 OP_1 OP_1 OP_1 OP_1", "OP_CHECKMULTISIGVERIFY OP_1", sighash_fn: sighash_fn)
+
+      assert :ok =
+               verify_asm("OP_0 OP_1 OP_1 OP_1 OP_1", "OP_CHECKMULTISIGVERIFY OP_1",
+                 sighash_fn: sighash_fn
+               )
     end
   end
 
