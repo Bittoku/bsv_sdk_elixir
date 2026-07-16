@@ -31,6 +31,49 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     assert parsed.stas3.frozen == true
   end
 
+  # Spec §6.2: a frozen frame's var2 is the freeze marker, which replaces any
+  # action data — so frozen + non-nil action data is contradictory and rejected
+  # rather than silently producing a script the reader would read as unfrozen.
+  test "frozen + action data is rejected for every action variant" do
+    owner = :binary.copy(<<0x01>>, 20)
+    redemption = :binary.copy(<<0x02>>, 20)
+
+    for action <- [
+          {:custom, <<0x99>>},
+          {:augment, <<0x03, 0xAA>>},
+          {:swap,
+           %{
+             requested_script_hash: :binary.copy(<<0>>, 32),
+             requested_pkh: :binary.copy(<<0>>, 20),
+             rate_numerator: 1,
+             rate_denominator: 1
+           }}
+        ] do
+      assert Stas3Builder.build_stas3_locking_script(
+               owner,
+               redemption,
+               action,
+               true,
+               true,
+               [],
+               []
+             ) ==
+               {:error, :frozen_with_action_data_unsupported}
+    end
+
+    # The same action data on an UNfrozen frame still builds fine.
+    assert {:ok, _} =
+             Stas3Builder.build_stas3_locking_script(
+               owner,
+               redemption,
+               {:custom, <<0x99>>},
+               false,
+               true,
+               [],
+               []
+             )
+  end
+
   test "build flags freezable" do
     assert Stas3Builder.build_stas3_flags(true) == <<0x01>>
   end

@@ -14,7 +14,11 @@ defmodule BSV.MixProject do
       docs: docs(),
       source_url: "https://github.com/Bittoku/bsv_sdk_elixir",
       homepage_url: "https://github.com/Bittoku/bsv_sdk_elixir",
-      dialyzer: [plt_add_apps: [:jason, :req]]
+      dialyzer: [
+        plt_add_apps: [:jason, :req],
+        ignore_warnings: ".dialyzer_ignore.exs",
+        list_unused_filters: true
+      ]
     ]
   end
 

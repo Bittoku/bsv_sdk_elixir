@@ -83,6 +83,7 @@ defmodule BSV.Tokens.ActionData do
 
   @type t ::
           {:swap, swap_fields()}
+          | {:augment, binary()}
           | {:custom, binary()}
 end
 

@@ -66,6 +66,26 @@ defmodule BSV.Tokens.Script.Stas3Builder do
           [binary()],
           [binary()]
         ) :: {:ok, BSV.Script.t()} | {:error, term()}
+  # A frozen frame carries the freeze marker (OP_2) in var2, which *replaces*
+  # any action data (spec §6.2). `frozen: true` together with non-nil action data
+  # is therefore contradictory: the current model cannot represent both, and a
+  # frozen token is unspendable so its directive/swap data is inert anyway.
+  # Reject the combination explicitly rather than silently emit an unfrozen
+  # script whose action data the reader would misclassify as not-frozen.
+  def build_stas3_locking_script_with_engine(
+        _owner_pkh,
+        _redemption_pkh,
+        action_data,
+        true,
+        _freezable_or_flags,
+        _engine,
+        _service_fields,
+        _optional_data
+      )
+      when not is_nil(action_data) do
+    {:error, :frozen_with_action_data_unsupported}
+  end
+
   def build_stas3_locking_script_with_engine(
         <<owner_pkh::binary-size(20)>>,
         <<redemption_pkh::binary-size(20)>>,
