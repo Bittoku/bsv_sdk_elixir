@@ -61,17 +61,30 @@ defmodule BSV.SymmetricKey do
   @doc """
   Decrypt ciphertext with a 32-byte key using AES-256-GCM.
 
-  Uses the SDK default AAD for decryption. For legacy ciphertexts encrypted
-  with empty AAD, use `decrypt/4` with `<<>>` as the AAD parameter.
+  Tries the SDK default AAD first, then transparently falls back to the empty
+  AAD used by legacy (pre-security-patch) ciphertexts — preserving backward
+  compatibility. The fallback is safe: the GCM tag binds the AAD, so a
+  new-format ciphertext (encrypted with the default AAD) never validates under
+  the empty AAD, and only genuinely-legacy ciphertexts decrypt via the fallback.
+  To require a specific AAD with no fallback, use `decrypt/3`.
 
   Automatically detects IV size: tries 12-byte (current) first, then
   falls back to 32-byte (legacy) for backward compatibility.
   """
   @spec decrypt(<<_::256>> | t(), binary()) :: {:ok, binary()} | {:error, :decrypt_failed}
-  def decrypt(key, encrypted), do: decrypt(key, encrypted, @default_aad)
+  def decrypt(key, encrypted) do
+    case decrypt(key, encrypted, @default_aad) do
+      {:ok, _} = result -> result
+      # Legacy ciphertexts were sealed with empty AAD; the tag check above fails
+      # for them, so retry with `<<>>`. New default-AAD ciphertexts still reject
+      # the wrong AAD because their tag only validates under @default_aad.
+      _ -> decrypt(key, encrypted, <<>>)
+    end
+  end
 
   @doc "Decrypt with explicit Additional Authenticated Data (AAD)."
-  @spec decrypt(<<_::256>> | t(), binary(), binary()) :: {:ok, binary()} | {:error, :decrypt_failed}
+  @spec decrypt(<<_::256>> | t(), binary(), binary()) ::
+          {:ok, binary()} | {:error, :decrypt_failed}
   def decrypt(%__MODULE__{raw: key}, encrypted, aad), do: decrypt(key, encrypted, aad)
 
   def decrypt(<<key::binary-size(32)>>, encrypted, aad) when is_binary(aad) do
@@ -89,7 +102,8 @@ defmodule BSV.SymmetricKey do
     end
   end
 
-  defp decrypt_with_iv_size(key, encrypted, iv_size, aad) when byte_size(encrypted) >= iv_size + @tag_size do
+  defp decrypt_with_iv_size(key, encrypted, iv_size, aad)
+       when byte_size(encrypted) >= iv_size + @tag_size do
     ct_len = byte_size(encrypted) - iv_size - @tag_size
 
     <<iv::binary-size(iv_size), ciphertext::binary-size(ct_len), tag::binary-size(@tag_size)>> =
