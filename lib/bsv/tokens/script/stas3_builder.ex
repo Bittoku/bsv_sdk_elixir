@@ -6,14 +6,22 @@ defmodule BSV.Tokens.Script.Stas3Builder do
   alias BSV.Tokens.Script.Engine
 
   @doc """
-  Build a STAS3 locking script.
+  Build a STAS3 locking script, auto-selecting the engine revision from `flags`.
+
+  When `freezable_or_flags` is a `BSV.Tokens.ScriptFlags` struct the engine is
+  chosen by `BSV.Tokens.ScriptFlags.engine/1` (0.0.11 when the NFT or AUGMENTABLE
+  bit is set, else 0.0.9 — spec §15.6), so a §15 NFT/augmentable flag byte can
+  never be emitted on a pre-§15 engine body. Legacy boolean callers stay pinned
+  to 0.0.9. Use `build_stas3_locking_script_with_engine/8` to pin the engine
+  explicitly.
 
   ## Parameters
   - `owner_pkh` - 20-byte owner public key hash
   - `redemption_pkh` - 20-byte redemption public key hash
   - `action_data` - optional action data (`{:swap, hash}` or `{:custom, bytes}`)
   - `frozen` - whether the token is frozen
-  - `freezable` - whether the token supports freeze operations
+  - `freezable_or_flags` - legacy `freezable` boolean, or a `ScriptFlags` struct
+    (the engine is derived from the struct)
   - `service_fields` - list of additional service field binaries
   - `optional_data` - list of additional optional data binaries
   """
@@ -41,11 +49,19 @@ defmodule BSV.Tokens.Script.Stas3Builder do
       action_data,
       frozen,
       freezable_or_flags,
-      :v0_0_9,
+      default_engine_for(freezable_or_flags),
       service_fields,
       optional_data
     )
   end
+
+  # Engine revision to use when the caller does not pin one: derive it from a
+  # `ScriptFlags` struct (0.0.11 for NFT/AUGMENTABLE, §15.6), else default legacy
+  # boolean callers to 0.0.9.
+  defp default_engine_for(%BSV.Tokens.ScriptFlags{} = flags),
+    do: BSV.Tokens.ScriptFlags.engine(flags)
+
+  defp default_engine_for(_freezable_bool), do: :v0_0_9
 
   @doc """
   Build a STAS 3.0 locking script on an explicit `engine` revision

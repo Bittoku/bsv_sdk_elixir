@@ -2199,6 +2199,135 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     end
   end
 
+  # ---- §15 capability-flag preservation from the consumed input ----
+
+  # A non-freezable NFT input (flags 0x04, engine 0.0.11).
+  defp nonfreezable_nft_input(owner, redemption, sats) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner,
+        redemption,
+        nil,
+        false,
+        %BSV.Tokens.ScriptFlags{freezable: false, nft: true},
+        :v0_0_11,
+        [],
+        []
+      )
+
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: sats,
+      locking_script: script,
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  # A non-freezable NFT+AUGMENTABLE input with no active directive (flags 0x0C).
+  defp nft_augmentable_input(owner, redemption, sats) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner,
+        redemption,
+        nil,
+        false,
+        %BSV.Tokens.ScriptFlags{freezable: false, nft: true, augmentable: true},
+        :v0_0_11,
+        [],
+        []
+      )
+
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: sats,
+      locking_script: script,
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  # A plain, non-freezable input (flags 0x00, engine 0.0.9).
+  defp nonfreezable_input(owner, redemption, sats) do
+    script =
+      make_stas3_locking_with_flags(owner, redemption, %BSV.Tokens.ScriptFlags{freezable: false})
+
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 1,
+      satoshis: sats,
+      locking_script: script,
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  defp output_flags(tx) do
+    parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+    {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+    {flags, parsed.stas3.engine}
+  end
+
+  describe "capability-flag preservation from input (§15)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "an NFT input cannot produce a non-NFT output", %{owner: o, redemption: r} do
+      # Destination omits the NFT bit; the consumed input's flag must win.
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([nonfreezable_nft_input(o, r, 5_000)], [plain_dest(5_000, r)])
+        )
+
+      {flags, engine} = output_flags(tx)
+      assert flags.nft
+      assert engine == :v0_0_11
+    end
+
+    test "an NFT+augmentable input cannot drop either bit", %{owner: o, redemption: r} do
+      # Destination sets neither NFT nor AUGMENTABLE; both must be preserved.
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([nft_augmentable_input(o, r, 5_000)], [plain_dest(5_000, r)])
+        )
+
+      {flags, engine} = output_flags(tx)
+      assert flags.nft
+      assert flags.augmentable
+      assert engine == :v0_0_11
+    end
+
+    test "a nonfreezable input cannot gain freezable from Stas3OutputParams defaults",
+         %{owner: o, redemption: r} do
+      # Stas3OutputParams defaults `freezable: true`; the non-freezable input wins.
+      default_dest = %Stas3OutputParams{
+        satoshis: 10_000,
+        owner_pkh: :binary.copy(<<0x33>>, 20),
+        redemption_pkh: r
+      }
+
+      assert default_dest.freezable
+
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([nonfreezable_input(o, r, 10_000)], [default_dest])
+        )
+
+      {flags, engine} = output_flags(tx)
+      refute flags.freezable
+      assert engine == :v0_0_9
+    end
+
+    test "engine selection stays 0.0.11 whenever NFT or augmentable is preserved",
+         %{owner: o, redemption: r} do
+      for input <- [nonfreezable_nft_input(o, r, 5_000), nft_augmentable_input(o, r, 5_000)] do
+        {:ok, tx} = Stas3.build_stas3_base_tx(nft_base_config([input], [plain_dest(5_000, r)]))
+        {_flags, engine} = output_flags(tx)
+        assert engine == :v0_0_11
+      end
+    end
+  end
+
   # ---- §6.4 / §15.2 directive-append covenant ----
 
   describe "directive-append (§6.4 / §15.2)" do

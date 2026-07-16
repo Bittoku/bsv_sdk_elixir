@@ -386,7 +386,14 @@ defmodule BSV.Tokens.Factory.Stas3 do
               config.fee_locking_script
             )
 
-          with {:ok, stas3_outputs} <- build_stas3_dest_outputs(config.destinations) do
+          # Spec §5.2.2 / §15: STAS 3.0 capability flags are immutable across a
+          # spend, so force every destination to carry the consumed inputs'
+          # capability flags before building outputs (see
+          # `enforce_input_capability_flags/2`).
+          enforced_destinations =
+            enforce_input_capability_flags(config.token_inputs, config.destinations)
+
+          with {:ok, stas3_outputs} <- build_stas3_dest_outputs(enforced_destinations) do
             # Spec §6.4 / §15.2: if a consumed NFT+AUGMENTABLE input carries an
             # augmentation directive, append its data to the sole token output
             # (the NFT invariant guarantees exactly one) before signing so the
@@ -1271,6 +1278,63 @@ defmodule BSV.Tokens.Factory.Stas3 do
           {:halt, error}
       end
     end)
+  end
+
+  # Spec §5.2.2 / §15: the four STAS 3.0 capability flags (freezable,
+  # confiscatable, nft, augmentable) are fixed at issuance and immutable across
+  # every spend. When all consumed token inputs carry an identical capability
+  # set — the same-token case (transfer / split / merge / freeze / confiscation)
+  # — force every produced token output to that canonical set so a destination
+  # can neither silently strip nor add a capability bit, and so engine selection
+  # follows `ScriptFlags.engine/1` (0.0.11 whenever NFT/AUGMENTABLE is preserved).
+  # A heterogeneous input set (a two-token atomic swap) is left untouched; those
+  # paths carry their own semantics and reject NFT inputs upstream.
+  defp enforce_input_capability_flags(token_inputs, destinations) do
+    case canonical_input_flags(token_inputs) do
+      {:ok, %ScriptFlags{} = flags} ->
+        Enum.map(destinations, &put_capability_flags(&1, flags))
+
+      :mixed ->
+        destinations
+    end
+  end
+
+  # `{:ok, flags}` when every token input decodes as a STAS 3.0 frame carrying an
+  # identical capability-flag set, else `:mixed` (skip enforcement).
+  defp canonical_input_flags(token_inputs) do
+    case Enum.map(token_inputs, &input_capability_flags/1) do
+      [%ScriptFlags{} = first | rest] ->
+        if Enum.all?(rest, &(&1 == first)), do: {:ok, first}, else: :mixed
+
+      _ ->
+        :mixed
+    end
+  end
+
+  # Decoded capability flags of a token input, or nil if it does not parse as a
+  # STAS 3.0 frame (defensive; token inputs are always STAS 3.0 locking scripts).
+  defp input_capability_flags(%{locking_script: %Script{} = script}) do
+    parsed = Reader.read_locking_script(Script.to_binary(script))
+
+    with %{script_type: :stas3, stas3: %{flags: flags}} when not is_nil(flags) <- parsed,
+         {:ok, %ScriptFlags{} = decoded} <- ScriptFlags.decode(flags) do
+      decoded
+    else
+      _ -> nil
+    end
+  end
+
+  defp input_capability_flags(_), do: nil
+
+  # Overwrite a destination's four capability-flag fields with `flags`.
+  defp put_capability_flags(dest, %ScriptFlags{} = flags) do
+    %{
+      dest
+      | freezable: flags.freezable,
+        confiscatable: flags.confiscatable,
+        nft: flags.nft,
+        augmentable: flags.augmentable
+    }
   end
 
   # Full capability flags for a destination (spec §15). STAS 3.0 flags are
