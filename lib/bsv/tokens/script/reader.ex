@@ -64,7 +64,7 @@ end
 defmodule BSV.Tokens.Script.Reader do
   @moduledoc "Script reader for parsing STAS and STAS 3.0 locking scripts."
 
-  alias BSV.Tokens.TokenId
+  alias BSV.Tokens.{TokenId, ScriptFlags}
   alias BSV.Tokens.Script.{ParsedScript, StasFields, Stas3Fields, Engine}
 
   @stas_v2_min_len 1432
@@ -294,10 +294,27 @@ defmodule BSV.Tokens.Script.Reader do
             _ -> <<>>
           end
 
-        service_fields =
+        # Spec §15: the pushes after redemption+flags are service fields
+        # (authority addresses for freezable/confiscatable) followed by
+        # optional trailing data. Decode the flags byte to determine how
+        # many of the trailing pushes are service fields (per
+        # `ScriptFlags.service_field_count/1`) — the remainder is
+        # `optional_data`. An undecodable flags byte is treated as
+        # zero service fields, so all trailing pushes fall through to
+        # `optional_data`.
+        {service_fields, optional_data} =
           case items do
-            [_, _ | rest] -> rest
-            _ -> []
+            [_, _ | trailing] ->
+              service_field_count =
+                case ScriptFlags.decode(flags) do
+                  {:ok, decoded} -> ScriptFlags.service_field_count(decoded)
+                  {:error, _} -> 0
+                end
+
+              Enum.split(trailing, service_field_count)
+
+            _ ->
+              {[], []}
           end
 
         # Spec §6.2 freeze marker classification. A frozen frame's var2 is
@@ -328,7 +345,7 @@ defmodule BSV.Tokens.Script.Reader do
             action_data_parsed: action_data_parsed,
             swap_descriptor: swap_descriptor,
             service_fields: service_fields,
-            optional_data: [],
+            optional_data: optional_data,
             frozen: frozen
           }
         }

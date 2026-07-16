@@ -99,8 +99,10 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     redemption = :binary.copy(<<0x22>>, 20)
     service = [<<0x01, 0x02, 0x03>>]
 
+    # freezable: true declares exactly 1 service field (spec §15), matching
+    # the single field being pushed below.
     {:ok, script} =
-      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, false, service, [])
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, true, service, [])
 
     parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
 
@@ -109,6 +111,56 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     assert parsed.stas3.redemption == redemption
     assert length(parsed.stas3.service_fields) > 0
     assert hd(parsed.stas3.service_fields) == <<0x01, 0x02, 0x03>>
+  end
+
+  # Regression for MR !1 comment 2267: `Reader.parse_stas3/1` must split the
+  # trailing pushes after redemption+flags using
+  # `ScriptFlags.service_field_count/1` — the first N pushes are
+  # `service_fields`, the remainder is `optional_data`. Previously every
+  # trailing push was misclassified as `service_fields` and `optional_data`
+  # was hard-coded to `[]`.
+  test "build and read roundtrip: zero service fields plus optional data" do
+    owner = :binary.copy(<<0x33>>, 20)
+    redemption = :binary.copy(<<0x44>>, 20)
+    optional = [<<0xAA>>, <<0xBB>>]
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, false, [], optional)
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.flags == <<0x00>>
+    assert parsed.stas3.service_fields == []
+    assert parsed.stas3.optional_data == optional
+  end
+
+  test "build and read roundtrip: freezable/confiscatable service fields plus optional data" do
+    owner = :binary.copy(<<0x55>>, 20)
+    redemption = :binary.copy(<<0x66>>, 20)
+    freeze_authority = :binary.copy(<<0x01>>, 20)
+    confiscate_authority = :binary.copy(<<0x02>>, 20)
+    service = [freeze_authority, confiscate_authority]
+    optional = [<<0xCC>>, <<0xDD>>, <<0xEE>>]
+
+    flags = %BSV.Tokens.ScriptFlags{freezable: true, confiscatable: true}
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner,
+        redemption,
+        nil,
+        false,
+        flags,
+        service,
+        optional
+      )
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.service_fields == service
+    assert parsed.stas3.optional_data == optional
   end
 
   test "push_data empty" do
