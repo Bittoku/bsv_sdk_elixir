@@ -428,6 +428,59 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     assert parsed.stas3.frozen == false
   end
 
+  # ── note 2235 §4 — freeze / unfreeze is a single-UTXO spend ──
+  # `Stas3Validate.freeze/2` only checks `hd(token_inputs)`, but the base builder
+  # signs every token input. A second, unvalidated token input must be rejected
+  # up front rather than silently signed into the freeze covenant.
+
+  test "freeze rejects a second, unvalidated token input" do
+    fee_key = test_key()
+    owner_a = :binary.copy(<<0x11>>, 20)
+    owner_b = :binary.copy(<<0x55>>, 20)
+    redemption_a = :binary.copy(<<0x22>>, 20)
+    redemption_b = :binary.copy(<<0x66>>, 20)
+
+    config = %{
+      token_inputs: [
+        %TokenInput{
+          txid: dummy_hash(),
+          vout: 0,
+          satoshis: 5_000,
+          locking_script: make_stas3_locking(owner_a, redemption_a),
+          private_key: test_key()
+        },
+        %TokenInput{
+          txid: dummy_hash(),
+          vout: 1,
+          satoshis: 5_000,
+          locking_script: make_stas3_locking(owner_b, redemption_b),
+          private_key: test_key()
+        }
+      ],
+      fee_txid: dummy_hash(),
+      fee_vout: 2,
+      fee_satoshis: 50_000,
+      fee_locking_script: p2pkh_script(fee_key),
+      fee_private_key: fee_key,
+      destinations: [
+        %Stas3OutputParams{
+          satoshis: 5_000,
+          owner_pkh: owner_a,
+          redemption_pkh: redemption_a,
+          frozen: false,
+          freezable: true,
+          service_fields: [],
+          optional_data: []
+        }
+      ],
+      spend_type: :transfer,
+      fee_rate: 500
+    }
+
+    assert {:error, :freeze_input_count} = Stas3.build_stas3_freeze_tx(config)
+    assert {:error, :freeze_input_count} = Stas3.build_stas3_unfreeze_tx(config)
+  end
+
   # ---- Split tests ----
 
   test "split tx with 1 input and 2 destinations" do
@@ -1045,6 +1098,29 @@ defmodule BSV.Tokens.Factory.Stas3Test do
         {:swap, swap_fields},
         false,
         true,
+        [],
+        []
+      )
+
+    script
+  end
+
+  # Build a swap-descriptor STAS3 locking script with explicit capability flags.
+  # Used by note 2235 §3 to prove each remainder inherits its OWN source input's
+  # immutable flags in a heterogeneous two-token swap.
+  defp make_stas3_swap_locking_with_flags(
+         owner_pkh,
+         redemption_pkh,
+         swap_fields,
+         %BSV.Tokens.ScriptFlags{} = flags
+       ) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner_pkh,
+        redemption_pkh,
+        {:swap, swap_fields},
+        false,
+        flags,
         [],
         []
       )
@@ -1911,6 +1987,76 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     assert fields.requested_pkh == bob_pkh
     assert fields.rate_numerator == 1
     assert fields.rate_denominator == 2
+  end
+
+  # ── note 2235 §3 — swap remainders inherit source immutable capability flags ──
+
+  test "heterogeneous swap remainders each inherit their own source input's flags" do
+    fee_key = test_key()
+    bob_pkh = :binary.copy(<<0x11>>, 20)
+    cat_pkh = :binary.copy(<<0x33>>, 20)
+    redemption_a = :binary.copy(<<0x22>>, 20)
+    redemption_b = :binary.copy(<<0x44>>, 20)
+
+    # Input 0 (bob): CONFISCATABLE only. Input 1 (cat): FREEZABLE only.
+    # A heterogeneous flag set → `enforce_input_capability_flags/2` skips it
+    # (:mixed), so each remainder must inherit from its OWN source here.
+    bob_flags = %BSV.Tokens.ScriptFlags{freezable: false, confiscatable: true}
+    cat_flags = %BSV.Tokens.ScriptFlags{freezable: true, confiscatable: false}
+
+    # A pure locking script (no swap descriptor) for the requested-hash targets.
+    cat_target = make_stas3_locking_with_flags(cat_pkh, redemption_b, cat_flags)
+    cat_hash = Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(cat_target))
+    bob_target = make_stas3_locking_with_flags(bob_pkh, redemption_a, bob_flags)
+    bob_hash = Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(bob_target))
+
+    swap_a = swap_fields(cat_hash, bob_pkh, 1, 2)
+    swap_b = swap_fields(bob_hash, cat_pkh, 2, 1)
+
+    inputs = [
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 100,
+        locking_script:
+          make_stas3_swap_locking_with_flags(bob_pkh, redemption_a, swap_a, bob_flags),
+        private_key: test_key()
+      },
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 1,
+        satoshis: 100,
+        locking_script:
+          make_stas3_swap_locking_with_flags(cat_pkh, redemption_b, swap_b, cat_flags),
+        private_key: test_key()
+      }
+    ]
+
+    # Remainders (idx 2, 3) carry DEFAULT flags from the caller — the factory
+    # must overwrite them with each source input's immutable capability set.
+    destinations = [
+      %Stas3OutputParams{satoshis: 40, owner_pkh: bob_pkh, redemption_pkh: redemption_b},
+      %Stas3OutputParams{satoshis: 80, owner_pkh: cat_pkh, redemption_pkh: redemption_a},
+      %Stas3OutputParams{satoshis: 60, owner_pkh: cat_pkh, redemption_pkh: redemption_b},
+      %Stas3OutputParams{satoshis: 20, owner_pkh: bob_pkh, redemption_pkh: redemption_a}
+    ]
+
+    config = make_swap_config(inputs, destinations, fee_key)
+    {:ok, tx} = Stas3.build_stas3_swap_swap_tx(config)
+
+    rem0 =
+      Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 2).locking_script))
+
+    rem1 =
+      Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 3).locking_script))
+
+    # Remainder for input 0 inherits bob's CONFISCATABLE-only flags.
+    {:ok, rem0_flags} = BSV.Tokens.ScriptFlags.decode(rem0.stas3.flags)
+    assert rem0_flags == bob_flags
+
+    # Remainder for input 1 inherits cat's FREEZABLE-only flags.
+    {:ok, rem1_flags} = BSV.Tokens.ScriptFlags.decode(rem1.stas3.flags)
+    assert rem1_flags == cat_flags
   end
 
   # ── STAS 3.0 v0.1 §9.5 / §10.3 — Item E: arbitrator-free no-sig swap leg. ──

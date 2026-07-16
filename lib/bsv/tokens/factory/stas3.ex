@@ -463,18 +463,22 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   Per spec §9.2 (enforced before signing via `BSV.Tokens.Stas3.Validate.freeze/2`):
 
+    * exactly one token input (a freeze/unfreeze is a single-UTXO spend; the
+      base builder would otherwise sign a second, unvalidated token input),
     * exactly one destination (a single STAS output),
     * `owner_pkh` and `redemption_pkh` byte-identical to the input,
     * the input's `flags` field has the FREEZABLE bit set.
 
-  Returns `{:error, :freeze_output_count}`, `{:error, :freeze_field_drift}`,
-  or `{:error, :freeze_flag_not_set}` on validation failure.
+  Returns `{:error, :freeze_input_count}`, `{:error, :freeze_output_count}`,
+  `{:error, :freeze_field_drift}`, or `{:error, :freeze_flag_not_set}` on
+  validation failure.
   """
   @spec build_stas3_freeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_freeze_tx(config) do
     frozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: true} end)
 
-    with :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
+    with :ok <- check_single_freeze_input(config.token_inputs),
+         :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
       build_stas3_base_tx(
         config
         |> Map.put(:spend_type, :freeze_unfreeze)
@@ -487,13 +491,16 @@ defmodule BSV.Tokens.Factory.Stas3 do
   @doc """
   Build a STAS3 unfreeze transaction.
 
-  Same §9.2 constraints as `build_stas3_freeze_tx/1`.
+  Same §9.2 constraints as `build_stas3_freeze_tx/1` (including the
+  exactly-one-token-input requirement; returns `{:error, :freeze_input_count}`
+  otherwise).
   """
   @spec build_stas3_unfreeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_unfreeze_tx(config) do
     unfrozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: false} end)
 
-    with :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
+    with :ok <- check_single_freeze_input(config.token_inputs),
+         :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
       build_stas3_base_tx(
         config
         |> Map.put(:spend_type, :freeze_unfreeze)
@@ -502,6 +509,14 @@ defmodule BSV.Tokens.Factory.Stas3 do
       )
     end
   end
+
+  # Spec §9.2: freeze / unfreeze is a single-UTXO spend. `Stas3Validate.freeze/2`
+  # only inspects `hd(token_inputs)`, but `build_stas3_base_tx/1` will sign every
+  # token input it is handed (up to two). Reject any input count other than one
+  # so a second, never-validated token input can never be signed into a
+  # freeze/unfreeze covenant.
+  defp check_single_freeze_input([_single]), do: :ok
+  defp check_single_freeze_input(_), do: {:error, :freeze_input_count}
 
   @doc """
   Build a STAS3 split transaction.
@@ -1506,8 +1521,13 @@ defmodule BSV.Tokens.Factory.Stas3 do
   #   * output 3 (if present) = remainder for leg 2 → inherits from input 1
   #
   # We rewrite remainder destinations in-place so the resulting locking script
-  # has both `owner_pkh` and `action_data` (var2) byte-identical to the source
-  # input — preserving the swap descriptor for any unmatched balance.
+  # has `owner_pkh`, `action_data` (var2), AND the four immutable STAS 3.0
+  # capability flags (freezable / confiscatable / nft / augmentable, spec §5.2.2
+  # / §15) byte-identical to the source input. A heterogeneous two-token swap
+  # carries different per-input flags, so `enforce_input_capability_flags/2`
+  # skips it (`:mixed`); each remainder must therefore inherit the capability
+  # set of its OWN source input here, or the covenant identity of the source
+  # token would silently change on the unmatched balance.
   @doc false
   def inherit_swap_remainders(token_inputs, destinations) do
     destinations
@@ -1532,12 +1552,27 @@ defmodule BSV.Tokens.Factory.Stas3 do
     case parsed do
       %{script_type: :stas3, stas3: %{owner: owner} = f} when not is_nil(owner) ->
         action_data = source_action_data(f)
+
         %{dest | owner_pkh: owner, action_data: action_data}
+        |> inherit_source_capability_flags(f)
 
       _ ->
         dest
     end
   end
+
+  # Copy the source input's immutable capability flags onto a remainder
+  # destination (spec §5.2.2 / §15). A frame whose `flags` field is missing or
+  # undecodable leaves the destination's flags untouched (defensive; token
+  # inputs always carry a valid flags byte).
+  defp inherit_source_capability_flags(dest, %{flags: flags}) when not is_nil(flags) do
+    case ScriptFlags.decode(flags) do
+      {:ok, %ScriptFlags{} = decoded} -> put_capability_flags(dest, decoded)
+      _ -> dest
+    end
+  end
+
+  defp inherit_source_capability_flags(dest, _), do: dest
 
   # Recover the original action_data tuple from a parsed STAS 3.0 frame.
   defp source_action_data(%{action_data_parsed: nil, action_data_raw: <<>>}), do: nil
