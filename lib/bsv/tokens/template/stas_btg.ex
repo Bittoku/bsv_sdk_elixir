@@ -56,9 +56,11 @@ defmodule BSV.Tokens.Template.StasBtg do
         locking_script_bin = Script.to_binary(source_output.locking_script)
         satoshis = source_output.satoshis
 
-        with {:ok, hash} <- Sighash.signature_hash(tx, input_index, locking_script_bin, flag, satoshis),
+        with {:ok, hash} <-
+               Sighash.signature_hash(tx, input_index, locking_script_bin, flag, satoshis),
              {:ok, der_sig} <- PrivateKey.sign(key, hash),
-             {:ok, {prefix, output, suffix}} <- Proof.split_tx_around_output(prev_raw_tx, prev_vout) do
+             {:ok, {prefix, output, suffix}} <-
+               Proof.split_tx_around_output(prev_raw_tx, prev_vout) do
           sig_with_flag = der_sig <> <<flag::8>>
           pubkey_bytes = PrivateKey.to_public_key(key) |> PublicKey.compress() |> Map.get(:point)
 
@@ -143,13 +145,18 @@ defmodule BSV.Tokens.Template.StasBtgCheckpoint do
         locking_script_bin = Script.to_binary(source_output.locking_script)
         satoshis = source_output.satoshis
 
-        with {:ok, hash} <- Sighash.signature_hash(tx, input_index, locking_script_bin, flag, satoshis),
+        with {:ok, hash} <-
+               Sighash.signature_hash(tx, input_index, locking_script_bin, flag, satoshis),
              {:ok, owner_der} <- PrivateKey.sign(owner_key, hash),
              {:ok, issuer_der} <- PrivateKey.sign(issuer_key, hash) do
           owner_sig = owner_der <> <<flag::8>>
           issuer_sig = issuer_der <> <<flag::8>>
-          owner_pubkey = PrivateKey.to_public_key(owner_key) |> PublicKey.compress() |> Map.get(:point)
-          issuer_pubkey = PrivateKey.to_public_key(issuer_key) |> PublicKey.compress() |> Map.get(:point)
+
+          owner_pubkey =
+            PrivateKey.to_public_key(owner_key) |> PublicKey.compress() |> Map.get(:point)
+
+          issuer_pubkey =
+            PrivateKey.to_public_key(issuer_key) |> PublicKey.compress() |> Map.get(:point)
 
           # Build: <sig_owner> <pubkey_owner> <sig_issuer> <pubkey_issuer> OP_FALSE
           script = %Script{

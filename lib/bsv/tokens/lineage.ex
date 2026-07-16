@@ -70,7 +70,8 @@ defmodule BSV.Tokens.Lineage do
 
   Returns `{:ok, updated_validator}` on success.
   """
-  @spec validate(t(), <<_::256>>, non_neg_integer(), (binary() -> {:ok, binary()} | {:error, term()})) ::
+  @spec validate(t(), <<_::256>>, non_neg_integer(), (binary() ->
+                                                        {:ok, binary()} | {:error, term()})) ::
           {:ok, t()} | {:error, term()}
   def validate(%__MODULE__{} = validator, utxo_txid, vout, tx_fetcher)
       when is_binary(utxo_txid) and is_integer(vout) and is_function(tx_fetcher, 1) do
@@ -109,7 +110,8 @@ defmodule BSV.Tokens.Lineage do
               handle_p2pkh_hop(validator, tx, current_txid, tx_fetcher, depth)
 
             other ->
-              {:error, "unexpected script type #{inspect(other)} at vout #{current_vout} in tx #{Base.encode16(current_txid, case: :lower)}"}
+              {:error,
+               "unexpected script type #{inspect(other)} at vout #{current_vout} in tx #{Base.encode16(current_txid, case: :lower)}"}
           end
         end
       end
@@ -122,7 +124,8 @@ defmodule BSV.Tokens.Lineage do
     if computed == expected_txid do
       :ok
     else
-      {:error, "fetched TX hash mismatch: expected #{Base.encode16(expected_txid, case: :lower)}, got #{Base.encode16(computed, case: :lower)}"}
+      {:error,
+       "fetched TX hash mismatch: expected #{Base.encode16(expected_txid, case: :lower)}, got #{Base.encode16(computed, case: :lower)}"}
     end
   end
 

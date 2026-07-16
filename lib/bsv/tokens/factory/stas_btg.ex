@@ -169,7 +169,10 @@ defmodule BSV.Tokens.Factory.StasBtg do
                config.redemption_pkh,
                config.splittable
              ) do
-        token_output = %Output{satoshis: config.destination.satoshis, locking_script: locking_script}
+        token_output = %Output{
+          satoshis: config.destination.satoshis,
+          locking_script: locking_script
+        }
 
         tx = %Transaction{
           inputs: [make_input(config.token_utxo), make_input(config.funding)],
@@ -209,7 +212,8 @@ defmodule BSV.Tokens.Factory.StasBtg do
         if total != config.token_utxo.satoshis do
           {:error, Error.amount_mismatch(config.token_utxo.satoshis, total)}
         else
-          with {:ok, token_outputs} <- build_btg_outputs(config.destinations, config.redemption_pkh, true) do
+          with {:ok, token_outputs} <-
+                 build_btg_outputs(config.destinations, config.redemption_pkh, true) do
             tx = %Transaction{
               inputs: [make_input(config.token_utxo), make_input(config.funding)],
               outputs: token_outputs
@@ -253,7 +257,11 @@ defmodule BSV.Tokens.Factory.StasBtg do
                    config.redemption_pkh,
                    config.splittable
                  ) do
-            token_output = %Output{satoshis: config.destination.satoshis, locking_script: locking_script}
+            token_output = %Output{
+              satoshis: config.destination.satoshis,
+              locking_script: locking_script
+            }
+
             token_inputs = Enum.map(config.token_utxos, &make_input/1)
 
             tx = %Transaction{
@@ -265,7 +273,8 @@ defmodule BSV.Tokens.Factory.StasBtg do
               funding_index = length(config.token_utxos)
 
               result =
-                Enum.reduce_while(0..(length(config.token_utxos) - 1), {:ok, tx}, fn i, {:ok, tx} ->
+                Enum.reduce_while(0..(length(config.token_utxos) - 1), {:ok, tx}, fn i,
+                                                                                     {:ok, tx} ->
                   utxo = Enum.at(config.token_utxos, i)
 
                   case sign_btg_input(tx, i, utxo.private_key, utxo.prev_raw_tx, utxo.vout) do
@@ -275,7 +284,8 @@ defmodule BSV.Tokens.Factory.StasBtg do
                 end)
 
               with {:ok, tx} <- result,
-                   {:ok, fund_sig} <- sign_p2pkh_input(tx, funding_index, config.funding.private_key) do
+                   {:ok, fund_sig} <-
+                     sign_p2pkh_input(tx, funding_index, config.funding.private_key) do
                 {:ok, set_unlocking_script(tx, funding_index, fund_sig)}
               end
             end
@@ -285,7 +295,8 @@ defmodule BSV.Tokens.Factory.StasBtg do
   end
 
   @doc "Build a BTG checkpoint transaction."
-  @spec build_btg_checkpoint_tx(btg_checkpoint_config()) :: {:ok, Transaction.t()} | {:error, term()}
+  @spec build_btg_checkpoint_tx(btg_checkpoint_config()) ::
+          {:ok, Transaction.t()} | {:error, term()}
   def build_btg_checkpoint_tx(config) do
     if config.destination.satoshis != config.token_utxo.satoshis do
       {:error, Error.amount_mismatch(config.token_utxo.satoshis, config.destination.satoshis)}
@@ -297,7 +308,10 @@ defmodule BSV.Tokens.Factory.StasBtg do
                config.redemption_pkh,
                config.splittable
              ) do
-        token_output = %Output{satoshis: config.destination.satoshis, locking_script: locking_script}
+        token_output = %Output{
+          satoshis: config.destination.satoshis,
+          locking_script: locking_script
+        }
 
         tx = %Transaction{
           inputs: [make_input(config.token_utxo), make_input(config.funding)],

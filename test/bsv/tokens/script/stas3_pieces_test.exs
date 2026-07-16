@@ -320,6 +320,7 @@ defmodule BSV.Tokens.Script.Stas3PiecesTest do
   # empty scriptSig, sequence 0xFFFFFFFF), N value-0 outputs, locktime 0.
   defp cross_sdk_preceding_tx(output_scripts) do
     version = <<1::little-32>>
+
     inputs =
       <<1>> <>
         :binary.copy(<<0x11>>, 32) <> <<0::little-32>> <> <<0>> <> <<0xFFFFFFFF::little-32>>

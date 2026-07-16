@@ -31,13 +31,15 @@ defmodule BSV.Tokens.Proof do
       with {:ok, cursor} <- skip_inputs(raw_tx, 4),
            {:ok, {output_count, cursor}} <- read_varint(raw_tx, cursor),
            :ok <- check_vout_range(vout, output_count),
-           {:ok, {output_start, output_end}} <- find_output_boundaries(raw_tx, cursor, vout, output_count) do
+           {:ok, {output_start, output_end}} <-
+             find_output_boundaries(raw_tx, cursor, vout, output_count) do
         prefix = binary_part(raw_tx, 0, output_start)
         output_bytes = binary_part(raw_tx, output_start, output_end - output_start)
         suffix = binary_part(raw_tx, output_end, byte_size(raw_tx) - output_end)
 
         # Sanity check
         reconstructed = prefix <> output_bytes <> suffix
+
         if Crypto.sha256d(reconstructed) == Crypto.sha256d(raw_tx) do
           {:ok, {prefix, output_bytes, suffix}}
         else
