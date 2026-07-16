@@ -31,6 +31,61 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     assert parsed.stas3.frozen == true
   end
 
+  # Spec §6.2: a frozen frame preserves the original var2 inside the freeze
+  # marker (`push(0x02 ‖ original)`), so freezing a non-empty var2 must NOT drop
+  # it. The reader classifies the frame as frozen AND exposes the recoverable
+  # pre-freeze action data.
+  test "frozen + non-empty action data is preserved and read back as frozen" do
+    owner = :binary.copy(<<0x01>>, 20)
+    redemption = :binary.copy(<<0x02>>, 20)
+
+    swap_fields = %{
+      requested_script_hash: :binary.copy(<<0x07>>, 32),
+      requested_pkh: :binary.copy(<<0x08>>, 20),
+      rate_numerator: 3,
+      rate_denominator: 5
+    }
+
+    for {action, expected_parsed} <- [
+          {{:custom, <<0x99, 0x88>>}, {:custom, <<0x99, 0x88>>}},
+          {{:augment, <<0xAA, 0xBB>>}, {:augment, <<0xAA, 0xBB>>}},
+          {{:swap, swap_fields}, {:swap, swap_fields}}
+        ] do
+      {:ok, frozen_script} =
+        Stas3Builder.build_stas3_locking_script(owner, redemption, action, true, true, [], [])
+
+      frozen = Reader.read_locking_script(BSV.Script.to_binary(frozen_script))
+      assert frozen.stas3.frozen == true
+      # The on-script var2 payload begins with the 0x02 freeze byte.
+      assert <<0x02, _::binary>> = frozen.stas3.action_data_raw
+      # The recoverable pre-freeze action data is exposed.
+      assert frozen.stas3.action_data_parsed == expected_parsed
+
+      # The SAME action data on an UNfrozen frame reads back without the marker.
+      {:ok, unfrozen_script} =
+        Stas3Builder.build_stas3_locking_script(owner, redemption, action, false, true, [], [])
+
+      unfrozen = Reader.read_locking_script(BSV.Script.to_binary(unfrozen_script))
+      assert unfrozen.stas3.frozen == false
+      assert unfrozen.stas3.action_data_parsed == expected_parsed
+    end
+  end
+
+  # An empty var2 still freezes to the bare `OP_2` marker (spec §6.2), not
+  # `push(0x02)`.
+  test "frozen + empty var2 emits the bare OP_2 marker" do
+    owner = :binary.copy(<<0x01>>, 20)
+    redemption = :binary.copy(<<0x02>>, 20)
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, true, true, [], [])
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+    assert parsed.stas3.frozen == true
+    assert parsed.stas3.action_data_raw == <<0x52>>
+    assert parsed.stas3.action_data_parsed == nil
+  end
+
   test "build flags freezable" do
     assert Stas3Builder.build_stas3_flags(true) == <<0x01>>
   end
@@ -44,8 +99,10 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     redemption = :binary.copy(<<0x22>>, 20)
     service = [<<0x01, 0x02, 0x03>>]
 
+    # freezable: true declares exactly 1 service field (spec §15), matching
+    # the single field being pushed below.
     {:ok, script} =
-      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, false, service, [])
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, true, service, [])
 
     parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
 
@@ -54,6 +111,56 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     assert parsed.stas3.redemption == redemption
     assert length(parsed.stas3.service_fields) > 0
     assert hd(parsed.stas3.service_fields) == <<0x01, 0x02, 0x03>>
+  end
+
+  # Regression for MR !1 comment 2267: `Reader.parse_stas3/1` must split the
+  # trailing pushes after redemption+flags using
+  # `ScriptFlags.service_field_count/1` — the first N pushes are
+  # `service_fields`, the remainder is `optional_data`. Previously every
+  # trailing push was misclassified as `service_fields` and `optional_data`
+  # was hard-coded to `[]`.
+  test "build and read roundtrip: zero service fields plus optional data" do
+    owner = :binary.copy(<<0x33>>, 20)
+    redemption = :binary.copy(<<0x44>>, 20)
+    optional = [<<0xAA>>, <<0xBB>>]
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, false, [], optional)
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.flags == <<0x00>>
+    assert parsed.stas3.service_fields == []
+    assert parsed.stas3.optional_data == optional
+  end
+
+  test "build and read roundtrip: freezable/confiscatable service fields plus optional data" do
+    owner = :binary.copy(<<0x55>>, 20)
+    redemption = :binary.copy(<<0x66>>, 20)
+    freeze_authority = :binary.copy(<<0x01>>, 20)
+    confiscate_authority = :binary.copy(<<0x02>>, 20)
+    service = [freeze_authority, confiscate_authority]
+    optional = [<<0xCC>>, <<0xDD>>, <<0xEE>>]
+
+    flags = %BSV.Tokens.ScriptFlags{freezable: true, confiscatable: true}
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner,
+        redemption,
+        nil,
+        false,
+        flags,
+        service,
+        optional
+      )
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.service_fields == service
+    assert parsed.stas3.optional_data == optional
   end
 
   test "push_data empty" do
@@ -259,6 +366,55 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
       # the literal sub-window starting `b16` is followed by `f8`, not `0`.
       bad_window = "5b160"
       refute hex =~ bad_window
+    end
+  end
+
+  # Spec §15.6: the public 7-arity builder auto-selects the engine revision from
+  # a ScriptFlags struct (0.0.11 for NFT/AUGMENTABLE), so a §15 flag byte can
+  # never land on a pre-§15 engine body. Legacy boolean callers stay on 0.0.9.
+  defp parse_flags_engine(flags) do
+    owner = :binary.copy(<<0xAA>>, 20)
+    redemption = :binary.copy(<<0xBB>>, 20)
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, false, flags, [], [])
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+    {:ok, decoded} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+    {decoded, parsed.stas3.engine}
+  end
+
+  describe "engine auto-selection on the 7-arity builder (§15.6)" do
+    test "NFT-only flags select the 0.0.11 engine" do
+      {flags, engine} = parse_flags_engine(%BSV.Tokens.ScriptFlags{nft: true})
+      assert flags.nft
+      assert engine == :v0_0_11
+    end
+
+    test "augmentable-only flags select the 0.0.11 engine" do
+      {flags, engine} = parse_flags_engine(%BSV.Tokens.ScriptFlags{augmentable: true})
+      assert flags.augmentable
+      assert engine == :v0_0_11
+    end
+
+    test "NFT+augmentable flags select the 0.0.11 engine" do
+      {flags, engine} =
+        parse_flags_engine(%BSV.Tokens.ScriptFlags{nft: true, augmentable: true})
+
+      assert flags.nft and flags.augmentable
+      assert engine == :v0_0_11
+    end
+
+    test "legacy boolean freezable stays on the 0.0.9 engine" do
+      {flags, engine} = parse_flags_engine(true)
+      assert flags.freezable
+      refute flags.nft
+      assert engine == :v0_0_9
+    end
+
+    test "legacy boolean false stays on the 0.0.9 engine" do
+      {_flags, engine} = parse_flags_engine(false)
+      assert engine == :v0_0_9
     end
   end
 end

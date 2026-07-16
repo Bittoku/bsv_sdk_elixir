@@ -291,6 +291,28 @@ defmodule BSV.Tokens.Script.Stas3Pieces do
     end
   end
 
+  @doc """
+  Locate a single output's locking-script byte range within a raw
+  transaction.
+
+  Returns `{:ok, {script_start_offset, script_length}}` for the output at
+  `output_index` (0-based), or `{:error, reason}` if the tx is malformed or
+  the index is out of range. Used by index-aware callers (e.g. the STAS3
+  swap-swap factory) to derive preceding-tx pieces from the *specific* asset
+  output rather than every tail match.
+  """
+  @spec locate_output_script(binary(), non_neg_integer()) ::
+          {:ok, {non_neg_integer(), non_neg_integer()}} | {:error, term()}
+  def locate_output_script(preceding_tx, output_index)
+      when is_binary(preceding_tx) and is_integer(output_index) and output_index >= 0 do
+    with {:ok, locations} <- locate_outputs(preceding_tx) do
+      case Enum.at(locations, output_index) do
+        nil -> {:error, {:vout_out_of_range, output_index}}
+        {_start, _len} = loc -> {:ok, loc}
+      end
+    end
+  end
+
   # Walk the tx once, returning {script_start_offset, script_length} for
   # every output. A minimal serialiser-aware walker — enough to skip
   # version, input list, and find each output's locking-script offset.

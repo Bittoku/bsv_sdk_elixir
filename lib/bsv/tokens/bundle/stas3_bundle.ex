@@ -584,7 +584,17 @@ defmodule BSV.Tokens.Bundle.Stas3Bundle do
        ) do
     remaining_total = Enum.sum(Enum.map(outputs, & &1.satoshis))
 
-    do_transfer_plan(bundle, stas_utxo, fee_utxo, outputs, 0, remaining_total, spend_type, note, [])
+    do_transfer_plan(
+      bundle,
+      stas_utxo,
+      fee_utxo,
+      outputs,
+      0,
+      remaining_total,
+      spend_type,
+      note,
+      []
+    )
   end
 
   defp do_transfer_plan(
@@ -766,7 +776,12 @@ defmodule BSV.Tokens.Bundle.Stas3Bundle do
     # Fee change output placeholder — will adjust after fee calc
     fee_address = bundle.fee_wallet.address
     {:ok, fee_change_script} = BSV.Script.Address.to_script(fee_address)
-    fee_change_output = %Output{satoshis: fee_utxo.satoshis, locking_script: fee_change_script, change: true}
+
+    fee_change_output = %Output{
+      satoshis: fee_utxo.satoshis,
+      locking_script: fee_change_script,
+      change: true
+    }
 
     # Assemble outputs: STAS3 outputs, fee change, then note
     all_outputs =

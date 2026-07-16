@@ -117,13 +117,22 @@ defmodule BSV.Script.Interpreter do
             {{:error, :unbalanced_conditional_in_unlock}, state_after_unlock}
 
           true ->
+            # BSV node semantics: the unlocking and locking scripts are
+            # evaluated as two separate script executions that only share
+            # the data stack. A post-Genesis `OP_RETURN` in the unlocking
+            # script sets `halt: true` to stop the *unlocking* script, but
+            # that halt MUST NOT carry into — and thereby skip — locking
+            # script evaluation. Clearing `halt` here forces the locking
+            # script to run; if it hits its own trailing `OP_RETURN`
+            # (as STAS 3.0 templates do), `halt` is re-set at that point.
             lock_state = %{
               state_after_unlock
               | astack: [],
                 num_ops: 0,
                 chunk_index: 0,
                 last_code_separator: nil,
-                trace_phase: :lock
+                trace_phase: :lock,
+                halt: false
             }
 
             case execute_chunks(lock.chunks, lock_state) do

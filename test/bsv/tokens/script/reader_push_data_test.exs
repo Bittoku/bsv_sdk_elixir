@@ -53,7 +53,8 @@ defmodule BSV.Tokens.Script.ReaderPushDataTest do
     # Flags: 0x01 (freezable) encoded as bare push (1 byte)
     flags_push = <<0x01, 0x01>>
 
-    <<0x14>> <> owner <> action_data_bytes <> base_template <> <<0x14>> <> redemption <> flags_push
+    <<0x14>> <>
+      owner <> action_data_bytes <> base_template <> <<0x14>> <> redemption <> flags_push
   end
 
   # ---------------------------------------------------------------------------

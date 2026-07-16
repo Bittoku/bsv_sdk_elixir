@@ -1,7 +1,15 @@
 defmodule BSV.Tokens.TypesTest do
   use ExUnit.Case, async: true
 
-  alias BSV.Tokens.{Stas3SpendType, Payment, Destination, Stas3Destination, Stas3LockingParams, Stas3OutputParams, TokenInput}
+  alias BSV.Tokens.{
+    Stas3SpendType,
+    Payment,
+    Destination,
+    Stas3Destination,
+    Stas3LockingParams,
+    Stas3OutputParams,
+    TokenInput
+  }
 
   describe "Stas3SpendType" do
     test "to_byte for all types" do

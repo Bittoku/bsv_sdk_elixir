@@ -56,6 +56,90 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     script
   end
 
+  # Build a genuine NFT locking script: flags bit 2 (0x04) on the 0.0.11 engine
+  # (spec §15.1 / §15.6).
+  defp make_stas3_nft_locking(owner_pkh, redemption_pkh) do
+    flags = %BSV.Tokens.ScriptFlags{nft: true}
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner_pkh,
+        redemption_pkh,
+        nil,
+        false,
+        flags,
+        :v0_0_11,
+        [],
+        []
+      )
+
+    script
+  end
+
+  # Build a genuine NFT+AUGMENTABLE locking script (flags 0x0C, engine 0.0.11)
+  # carrying an augmentation directive in var2 (spec §6.4 / §15.2).
+  defp make_stas3_augment_locking(owner_pkh, redemption_pkh, data) do
+    flags = %BSV.Tokens.ScriptFlags{nft: true, augmentable: true}
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner_pkh,
+        redemption_pkh,
+        {:augment, data},
+        false,
+        flags,
+        :v0_0_11,
+        [],
+        []
+      )
+
+    script
+  end
+
+  # Un-augmented NFT+AUGMENTABLE output script (engine 0.0.11), owner 0x33.
+  defp nft_aug_base(redemption) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        :binary.copy(<<0x33>>, 20),
+        redemption,
+        nil,
+        false,
+        %BSV.Tokens.ScriptFlags{nft: true, augmentable: true},
+        :v0_0_11,
+        [],
+        []
+      )
+
+    Script.to_binary(script)
+  end
+
+  defp plain_dest(sats, redemption, owner \\ :binary.copy(<<0x33>>, 20)) do
+    %Stas3OutputParams{
+      satoshis: sats,
+      owner_pkh: owner,
+      redemption_pkh: redemption,
+      frozen: false,
+      freezable: false,
+      service_fields: [],
+      optional_data: []
+    }
+  end
+
+  defp issue_config(outputs) do
+    key = test_key()
+
+    %{
+      scheme: test_scheme(),
+      funding_txid: dummy_hash(),
+      funding_vout: 0,
+      funding_satoshis: 100_000,
+      funding_locking_script: p2pkh_script(key),
+      funding_private_key: key,
+      outputs: outputs,
+      fee_rate: 500
+    }
+  end
+
   # ---- Issue flow tests ----
 
   test "issue txs structure" do
@@ -342,6 +426,174 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
     assert parsed.script_type == :stas3
     assert parsed.stas3.frozen == false
+  end
+
+  # ── note 2245 — freeze / unfreeze must preserve a non-empty var2 ──
+  # Spec §6.2: freezing a UTXO that carries a swap descriptor (or any non-empty
+  # var2) must wrap the original inside the freeze marker (`0x02 ‖ original`),
+  # and unfreeze must recover it byte-for-byte — never drop it.
+
+  defp freeze_test_swap_fields do
+    %{
+      requested_script_hash: :binary.copy(<<0x07>>, 32),
+      requested_pkh: :binary.copy(<<0x08>>, 20),
+      rate_numerator: 3,
+      rate_denominator: 5
+    }
+  end
+
+  # STAS3 locking script whose var2 carries a legacy 61-byte swap leg, built at
+  # the given `frozen?` state (frozen wraps the swap in the §6.2 freeze marker).
+  defp make_freeze_test_swap_locking(owner_pkh, redemption_pkh, frozen?) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner_pkh,
+        redemption_pkh,
+        {:swap, freeze_test_swap_fields()},
+        frozen?,
+        true,
+        [],
+        []
+      )
+
+    script
+  end
+
+  defp freeze_unfreeze_config(fee_key, token_input, dest) do
+    %{
+      token_inputs: [token_input],
+      fee_txid: dummy_hash(),
+      fee_vout: 1,
+      fee_satoshis: 50_000,
+      fee_locking_script: p2pkh_script(fee_key),
+      fee_private_key: fee_key,
+      destinations: [dest],
+      spend_type: :transfer,
+      fee_rate: 500
+    }
+  end
+
+  test "freeze preserves a non-empty (swap-descriptor) var2 in the frozen marker" do
+    fee_key = test_key()
+    owner_pkh = :binary.copy(<<0x11>>, 20)
+    redemption_pkh = :binary.copy(<<0x22>>, 20)
+
+    token_input = %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: 5_000,
+      locking_script: make_freeze_test_swap_locking(owner_pkh, redemption_pkh, false),
+      private_key: test_key()
+    }
+
+    dest = %Stas3OutputParams{
+      satoshis: 5_000,
+      owner_pkh: owner_pkh,
+      redemption_pkh: redemption_pkh,
+      frozen: false,
+      freezable: true,
+      action_data: nil,
+      service_fields: [],
+      optional_data: []
+    }
+
+    {:ok, tx} = Stas3.build_stas3_freeze_tx(freeze_unfreeze_config(fee_key, token_input, dest))
+
+    parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+    assert parsed.stas3.frozen == true
+    # The original swap var2 is preserved under the 0x02 freeze byte...
+    assert <<0x02, _::binary>> = parsed.stas3.action_data_raw
+    # ...and is fully recoverable as the pre-freeze swap descriptor.
+    assert parsed.stas3.action_data_parsed == {:swap, freeze_test_swap_fields()}
+    assert parsed.stas3.swap_descriptor != nil
+  end
+
+  test "unfreeze recovers the original non-empty var2 from a frozen swap frame" do
+    fee_key = test_key()
+    owner_pkh = :binary.copy(<<0x11>>, 20)
+    redemption_pkh = :binary.copy(<<0x22>>, 20)
+
+    # Source UTXO is FROZEN with a swap descriptor wrapped in the freeze marker.
+    token_input = %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: 5_000,
+      locking_script: make_freeze_test_swap_locking(owner_pkh, redemption_pkh, true),
+      private_key: test_key()
+    }
+
+    dest = %Stas3OutputParams{
+      satoshis: 5_000,
+      owner_pkh: owner_pkh,
+      redemption_pkh: redemption_pkh,
+      frozen: true,
+      freezable: true,
+      action_data: nil,
+      service_fields: [],
+      optional_data: []
+    }
+
+    {:ok, tx} = Stas3.build_stas3_unfreeze_tx(freeze_unfreeze_config(fee_key, token_input, dest))
+
+    parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+    assert parsed.stas3.frozen == false
+    # The freeze marker is gone and the raw swap var2 is restored verbatim.
+    assert <<0x01, _::binary>> = parsed.stas3.action_data_raw
+    assert parsed.stas3.action_data_parsed == {:swap, freeze_test_swap_fields()}
+    assert parsed.stas3.swap_descriptor != nil
+  end
+
+  # ── note 2235 §4 — freeze / unfreeze is a single-UTXO spend ──
+  # `Stas3Validate.freeze/2` only checks `hd(token_inputs)`, but the base builder
+  # signs every token input. A second, unvalidated token input must be rejected
+  # up front rather than silently signed into the freeze covenant.
+
+  test "freeze rejects a second, unvalidated token input" do
+    fee_key = test_key()
+    owner_a = :binary.copy(<<0x11>>, 20)
+    owner_b = :binary.copy(<<0x55>>, 20)
+    redemption_a = :binary.copy(<<0x22>>, 20)
+    redemption_b = :binary.copy(<<0x66>>, 20)
+
+    config = %{
+      token_inputs: [
+        %TokenInput{
+          txid: dummy_hash(),
+          vout: 0,
+          satoshis: 5_000,
+          locking_script: make_stas3_locking(owner_a, redemption_a),
+          private_key: test_key()
+        },
+        %TokenInput{
+          txid: dummy_hash(),
+          vout: 1,
+          satoshis: 5_000,
+          locking_script: make_stas3_locking(owner_b, redemption_b),
+          private_key: test_key()
+        }
+      ],
+      fee_txid: dummy_hash(),
+      fee_vout: 2,
+      fee_satoshis: 50_000,
+      fee_locking_script: p2pkh_script(fee_key),
+      fee_private_key: fee_key,
+      destinations: [
+        %Stas3OutputParams{
+          satoshis: 5_000,
+          owner_pkh: owner_a,
+          redemption_pkh: redemption_a,
+          frozen: false,
+          freezable: true,
+          service_fields: [],
+          optional_data: []
+        }
+      ],
+      spend_type: :transfer,
+      fee_rate: 500
+    }
+
+    assert {:error, :freeze_input_count} = Stas3.build_stas3_freeze_tx(config)
+    assert {:error, :freeze_input_count} = Stas3.build_stas3_unfreeze_tx(config)
   end
 
   # ---- Split tests ----
@@ -961,6 +1213,29 @@ defmodule BSV.Tokens.Factory.Stas3Test do
         {:swap, swap_fields},
         false,
         true,
+        [],
+        []
+      )
+
+    script
+  end
+
+  # Build a swap-descriptor STAS3 locking script with explicit capability flags.
+  # Used by note 2235 §3 to prove each remainder inherits its OWN source input's
+  # immutable flags in a heterogeneous two-token swap.
+  defp make_stas3_swap_locking_with_flags(
+         owner_pkh,
+         redemption_pkh,
+         swap_fields,
+         %BSV.Tokens.ScriptFlags{} = flags
+       ) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner_pkh,
+        redemption_pkh,
+        {:swap, swap_fields},
+        false,
+        flags,
         [],
         []
       )
@@ -1829,6 +2104,76 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     assert fields.rate_denominator == 2
   end
 
+  # ── note 2235 §3 — swap remainders inherit source immutable capability flags ──
+
+  test "heterogeneous swap remainders each inherit their own source input's flags" do
+    fee_key = test_key()
+    bob_pkh = :binary.copy(<<0x11>>, 20)
+    cat_pkh = :binary.copy(<<0x33>>, 20)
+    redemption_a = :binary.copy(<<0x22>>, 20)
+    redemption_b = :binary.copy(<<0x44>>, 20)
+
+    # Input 0 (bob): CONFISCATABLE only. Input 1 (cat): FREEZABLE only.
+    # A heterogeneous flag set → `enforce_input_capability_flags/2` skips it
+    # (:mixed), so each remainder must inherit from its OWN source here.
+    bob_flags = %BSV.Tokens.ScriptFlags{freezable: false, confiscatable: true}
+    cat_flags = %BSV.Tokens.ScriptFlags{freezable: true, confiscatable: false}
+
+    # A pure locking script (no swap descriptor) for the requested-hash targets.
+    cat_target = make_stas3_locking_with_flags(cat_pkh, redemption_b, cat_flags)
+    cat_hash = Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(cat_target))
+    bob_target = make_stas3_locking_with_flags(bob_pkh, redemption_a, bob_flags)
+    bob_hash = Stas3Builder.compute_stas3_requested_script_hash(Script.to_binary(bob_target))
+
+    swap_a = swap_fields(cat_hash, bob_pkh, 1, 2)
+    swap_b = swap_fields(bob_hash, cat_pkh, 2, 1)
+
+    inputs = [
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 100,
+        locking_script:
+          make_stas3_swap_locking_with_flags(bob_pkh, redemption_a, swap_a, bob_flags),
+        private_key: test_key()
+      },
+      %TokenInput{
+        txid: dummy_hash(),
+        vout: 1,
+        satoshis: 100,
+        locking_script:
+          make_stas3_swap_locking_with_flags(cat_pkh, redemption_b, swap_b, cat_flags),
+        private_key: test_key()
+      }
+    ]
+
+    # Remainders (idx 2, 3) carry DEFAULT flags from the caller — the factory
+    # must overwrite them with each source input's immutable capability set.
+    destinations = [
+      %Stas3OutputParams{satoshis: 40, owner_pkh: bob_pkh, redemption_pkh: redemption_b},
+      %Stas3OutputParams{satoshis: 80, owner_pkh: cat_pkh, redemption_pkh: redemption_a},
+      %Stas3OutputParams{satoshis: 60, owner_pkh: cat_pkh, redemption_pkh: redemption_b},
+      %Stas3OutputParams{satoshis: 20, owner_pkh: bob_pkh, redemption_pkh: redemption_a}
+    ]
+
+    config = make_swap_config(inputs, destinations, fee_key)
+    {:ok, tx} = Stas3.build_stas3_swap_swap_tx(config)
+
+    rem0 =
+      Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 2).locking_script))
+
+    rem1 =
+      Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 3).locking_script))
+
+    # Remainder for input 0 inherits bob's CONFISCATABLE-only flags.
+    {:ok, rem0_flags} = BSV.Tokens.ScriptFlags.decode(rem0.stas3.flags)
+    assert rem0_flags == bob_flags
+
+    # Remainder for input 1 inherits cat's FREEZABLE-only flags.
+    {:ok, rem1_flags} = BSV.Tokens.ScriptFlags.decode(rem1.stas3.flags)
+    assert rem1_flags == cat_flags
+  end
+
   # ── STAS 3.0 v0.1 §9.5 / §10.3 — Item E: arbitrator-free no-sig swap leg. ──
 
   test "swap with EMPTY_HASH160 owner takes no-sig path" do
@@ -1916,7 +2261,10 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     # preimage byte-for-byte.
     locking_bin = Script.to_binary(no_auth_input.source_output.locking_script)
     sats = no_auth_input.source_output.satoshis
-    {:ok, recomputed_preimage} = BSV.Transaction.Sighash.calc_preimage(tx, 0, locking_bin, 0x41, sats)
+
+    {:ok, recomputed_preimage} =
+      BSV.Transaction.Sighash.calc_preimage(tx, 0, locking_bin, 0x41, sats)
+
     assert preimage_bytes == recomputed_preimage
 
     # Input 1: regular signed leg — witness ‖ <sig> <pubkey>.
@@ -1992,5 +2340,419 @@ defmodule BSV.Tokens.Factory.Stas3Test do
 
     assert out_parsed.script_type == :stas3
     assert out_parsed.stas3.owner == issuer_pkh
+  end
+
+  # ---- §15.1 NFT one-output enforcement ----
+
+  defp nft_input(owner, redemption, sats \\ 10_000) do
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: sats,
+      locking_script: make_stas3_nft_locking(owner, redemption),
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  defp plain_input(owner, redemption, sats \\ 10_000) do
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 1,
+      satoshis: sats,
+      locking_script: make_stas3_locking(owner, redemption),
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  defp nft_base_config(inputs, dests) do
+    %{
+      token_inputs: inputs,
+      fee_txid: dummy_hash(),
+      fee_vout: 2,
+      fee_satoshis: 50_000,
+      fee_locking_script: p2pkh_script(PrivateKey.generate()),
+      fee_private_key: PrivateKey.generate(),
+      destinations: dests,
+      spend_type: :transfer,
+      fee_rate: 500
+    }
+  end
+
+  describe "NFT one-output enforcement (§15.1)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "split of an NFT input is rejected", %{owner: o, redemption: r} do
+      config = nft_base_config([nft_input(o, r)], [plain_dest(4_000, r), plain_dest(6_000, r)])
+      assert Stas3.build_stas3_split_tx(config) == {:error, :nft_not_splittable}
+    end
+
+    test "merge with an NFT input is rejected", %{owner: o, redemption: r} do
+      config =
+        nft_base_config(
+          [plain_input(o, r, 3_000), nft_input(o, r, 7_000)],
+          [plain_dest(10_000, r)]
+        )
+
+      assert Stas3.build_stas3_merge_tx(config) == {:error, :nft_not_mergeable}
+    end
+
+    test "transfer of an NFT with multiple outputs is rejected", %{owner: o, redemption: r} do
+      config = nft_base_config([nft_input(o, r)], [plain_dest(4_000, r), plain_dest(6_000, r)])
+      assert Stas3.build_stas3_base_tx(config) == {:error, :nft_output_count}
+    end
+
+    test "transfer of an NFT alongside a second input is rejected", %{owner: o, redemption: r} do
+      config =
+        nft_base_config(
+          [nft_input(o, r, 5_000), plain_input(o, r, 5_000)],
+          [plain_dest(10_000, r)]
+        )
+
+      assert Stas3.build_stas3_base_tx(config) == {:error, :nft_not_mergeable}
+    end
+  end
+
+  # ---- §15 capability-flag propagation to transfer outputs ----
+
+  describe "flag propagation to outputs (§15)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "NFT transfer output re-encodes the NFT flag on the 0.0.11 engine",
+         %{owner: o, redemption: r} do
+      nft_dest = %Stas3OutputParams{
+        satoshis: 5_000,
+        owner_pkh: :binary.copy(<<0x33>>, 20),
+        redemption_pkh: r,
+        frozen: false,
+        freezable: false,
+        nft: true,
+        service_fields: [],
+        optional_data: []
+      }
+
+      {:ok, tx} = Stas3.build_stas3_base_tx(nft_base_config([nft_input(o, r, 5_000)], [nft_dest]))
+
+      parsed =
+        Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+
+      assert parsed.script_type == :stas3
+      {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+      assert flags.nft
+      assert parsed.stas3.engine == :v0_0_11
+    end
+
+    test "plain transfer output stays on the 0.0.9 engine", %{owner: o, redemption: r} do
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([plain_input(o, r, 10_000)], [plain_dest(10_000, r)])
+        )
+
+      parsed =
+        Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+
+      {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+      refute flags.nft
+      assert parsed.stas3.engine == :v0_0_9
+    end
+  end
+
+  # ---- §15 capability-flag preservation from the consumed input ----
+
+  # A non-freezable NFT input (flags 0x04, engine 0.0.11).
+  defp nonfreezable_nft_input(owner, redemption, sats) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner,
+        redemption,
+        nil,
+        false,
+        %BSV.Tokens.ScriptFlags{freezable: false, nft: true},
+        :v0_0_11,
+        [],
+        []
+      )
+
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: sats,
+      locking_script: script,
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  # A non-freezable NFT+AUGMENTABLE input with no active directive (flags 0x0C).
+  defp nft_augmentable_input(owner, redemption, sats) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script_with_engine(
+        owner,
+        redemption,
+        nil,
+        false,
+        %BSV.Tokens.ScriptFlags{freezable: false, nft: true, augmentable: true},
+        :v0_0_11,
+        [],
+        []
+      )
+
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: sats,
+      locking_script: script,
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  # A plain, non-freezable input (flags 0x00, engine 0.0.9).
+  defp nonfreezable_input(owner, redemption, sats) do
+    script =
+      make_stas3_locking_with_flags(owner, redemption, %BSV.Tokens.ScriptFlags{freezable: false})
+
+    %TokenInput{
+      txid: dummy_hash(),
+      vout: 1,
+      satoshis: sats,
+      locking_script: script,
+      private_key: PrivateKey.generate()
+    }
+  end
+
+  defp output_flags(tx) do
+    parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+    {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+    {flags, parsed.stas3.engine}
+  end
+
+  describe "capability-flag preservation from input (§15)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "an NFT input cannot produce a non-NFT output", %{owner: o, redemption: r} do
+      # Destination omits the NFT bit; the consumed input's flag must win.
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([nonfreezable_nft_input(o, r, 5_000)], [plain_dest(5_000, r)])
+        )
+
+      {flags, engine} = output_flags(tx)
+      assert flags.nft
+      assert engine == :v0_0_11
+    end
+
+    test "an NFT+augmentable input cannot drop either bit", %{owner: o, redemption: r} do
+      # Destination sets neither NFT nor AUGMENTABLE; both must be preserved.
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([nft_augmentable_input(o, r, 5_000)], [plain_dest(5_000, r)])
+        )
+
+      {flags, engine} = output_flags(tx)
+      assert flags.nft
+      assert flags.augmentable
+      assert engine == :v0_0_11
+    end
+
+    test "a nonfreezable input cannot gain freezable from Stas3OutputParams defaults",
+         %{owner: o, redemption: r} do
+      # Stas3OutputParams defaults `freezable: true`; the non-freezable input wins.
+      default_dest = %Stas3OutputParams{
+        satoshis: 10_000,
+        owner_pkh: :binary.copy(<<0x33>>, 20),
+        redemption_pkh: r
+      }
+
+      assert default_dest.freezable
+
+      {:ok, tx} =
+        Stas3.build_stas3_base_tx(
+          nft_base_config([nonfreezable_input(o, r, 10_000)], [default_dest])
+        )
+
+      {flags, engine} = output_flags(tx)
+      refute flags.freezable
+      assert engine == :v0_0_9
+    end
+
+    test "engine selection stays 0.0.11 whenever NFT or augmentable is preserved",
+         %{owner: o, redemption: r} do
+      for input <- [nonfreezable_nft_input(o, r, 5_000), nft_augmentable_input(o, r, 5_000)] do
+        {:ok, tx} = Stas3.build_stas3_base_tx(nft_base_config([input], [plain_dest(5_000, r)]))
+        {_flags, engine} = output_flags(tx)
+        assert engine == :v0_0_11
+      end
+    end
+  end
+
+  # ---- §6.4 / §15.2 directive-append covenant ----
+
+  describe "directive-append (§6.4 / §15.2)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "spending an augment-directive NFT appends the data to the output once",
+         %{owner: o, redemption: r} do
+      data = <<0x05, 0xDE, 0xAD, 0xBE, 0xEF, 0x99>>
+
+      input = %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 5_000,
+        locking_script: make_stas3_augment_locking(o, r, data),
+        private_key: PrivateKey.generate()
+      }
+
+      out = %Stas3OutputParams{
+        satoshis: 5_000,
+        owner_pkh: :binary.copy(<<0x33>>, 20),
+        redemption_pkh: r,
+        frozen: false,
+        freezable: false,
+        nft: true,
+        augmentable: true,
+        service_fields: [],
+        optional_data: []
+      }
+
+      {:ok, tx} = Stas3.build_stas3_base_tx(nft_base_config([input], [out]))
+      out_bin = Script.to_binary(Enum.at(tx.outputs, 0).locking_script)
+
+      # The output is exactly the un-augmented script with the directive data
+      # appended once at its tail.
+      assert out_bin == nft_aug_base(r) <> data
+    end
+
+    test "verify_augment_directive_appended: ok / missing / none", %{owner: o, redemption: r} do
+      data = <<0x03, 0xAA, 0xBB>>
+      input = Script.to_binary(make_stas3_augment_locking(o, r, data))
+      base = nft_aug_base(r)
+
+      assert Stas3.verify_augment_directive_appended(input, base <> data) == :ok
+
+      assert Stas3.verify_augment_directive_appended(input, base) ==
+               {:error, :directive_not_appended}
+
+      # A plain NFT input carries no active directive → ok regardless of output.
+      plain = Script.to_binary(make_stas3_nft_locking(o, r))
+      assert Stas3.verify_augment_directive_appended(plain, base) == :ok
+    end
+  end
+
+  # ---- §15 issuance capability flags + var2 directive ----
+
+  defp issued_output(result) do
+    Reader.read_locking_script(
+      Script.to_binary(Enum.at(result.issue_tx.outputs, 0).locking_script)
+    )
+  end
+
+  describe "issuance capability flags (§15)" do
+    test "minting an NFT+AUGMENTABLE output uses the 0.0.11 engine with both flags" do
+      config =
+        issue_config([
+          %{
+            satoshis: 5_000,
+            owner_pkh: :binary.copy(<<0x11>>, 20),
+            freezable: false,
+            nft: true,
+            augmentable: true
+          }
+        ])
+
+      {:ok, result} = Stas3.build_stas3_issue_txs(config)
+      parsed = issued_output(result)
+      {:ok, flags} = BSV.Tokens.ScriptFlags.decode(parsed.stas3.flags)
+      assert flags.nft and flags.augmentable
+      assert parsed.stas3.engine == :v0_0_11
+    end
+
+    test "minting an AUGMENTABLE-without-NFT output is rejected" do
+      config =
+        issue_config([
+          %{
+            satoshis: 5_000,
+            owner_pkh: :binary.copy(<<0x11>>, 20),
+            freezable: false,
+            augmentable: true
+          }
+        ])
+
+      assert Stas3.build_stas3_issue_txs(config) == {:error, :augmentable_requires_nft}
+    end
+
+    test "minting an NFT with an augment directive installs the var2 directive" do
+      data = <<0x04, 0x01, 0x02, 0x03, 0x04>>
+
+      config =
+        issue_config([
+          %{
+            satoshis: 5_000,
+            owner_pkh: :binary.copy(<<0x11>>, 20),
+            freezable: false,
+            nft: true,
+            augmentable: true,
+            action_data: {:augment, data}
+          }
+        ])
+
+      {:ok, result} = Stas3.build_stas3_issue_txs(config)
+      assert issued_output(result).stas3.action_data_parsed == {:augment, data}
+    end
+  end
+
+  # ---- §15 conservative swap/confiscation NFT guards ----
+
+  describe "swap/confiscation NFT guards (§15)" do
+    setup do
+      %{owner: :binary.copy(<<0x11>>, 20), redemption: :binary.copy(<<0x22>>, 20)}
+    end
+
+    test "confiscating an NFT (+confiscatable) input is rejected", %{owner: o, redemption: r} do
+      flags = %BSV.Tokens.ScriptFlags{nft: true, confiscatable: true}
+
+      {:ok, locking} =
+        Stas3Builder.build_stas3_locking_script_with_engine(
+          o,
+          r,
+          nil,
+          false,
+          flags,
+          :v0_0_11,
+          [],
+          []
+        )
+
+      input = %TokenInput{
+        txid: dummy_hash(),
+        vout: 0,
+        satoshis: 5_000,
+        locking_script: locking,
+        private_key: PrivateKey.generate()
+      }
+
+      config = nft_base_config([input], [plain_dest(5_000, r)])
+      assert Stas3.build_stas3_confiscate_tx(config) == {:error, :nft_spend_path_unsupported}
+    end
+
+    test "an NFT leg in an atomic swap is rejected", %{owner: o, redemption: r} do
+      config =
+        nft_base_config(
+          [nft_input(o, r, 5_000), plain_input(o, r, 5_000)],
+          [plain_dest(10_000, r)]
+        )
+
+      assert Stas3.build_stas3_swap_swap_tx(config) == {:error, :nft_spend_path_unsupported}
+    end
+
+    test "an NFT input in swap-cancellation is rejected", %{owner: o, redemption: r} do
+      config = nft_base_config([nft_input(o, r, 5_000)], [plain_dest(5_000, r)])
+      assert Stas3.build_stas3_swap_cancel_tx(config) == {:error, :nft_spend_path_unsupported}
+    end
   end
 end

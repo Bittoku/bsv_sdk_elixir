@@ -82,6 +82,7 @@ defmodule BSV.Tokens.Script.Templates do
 
   @doc "STAS 3.0 base template prefix bytes."
   def stas3_base_prefix, do: <<0x6D, 0x82, 0x73, 0x63>>
+
   @doc """
   Length of the STAS 3.0 canonical engine base template in bytes.
 

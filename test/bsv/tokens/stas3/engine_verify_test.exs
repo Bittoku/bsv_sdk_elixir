@@ -292,6 +292,145 @@ defmodule BSV.Tokens.Stas3.EngineVerifyTest do
     >>
   end
 
+  # Synthetic 1-in / 2-out preceding tx carrying `lock` at BOTH output
+  # indices. Used to prove that `asset_output_index` selects WHICH output's
+  # asset script is excised when several outputs share the same STAS tail.
+  defp synthetic_preceding_tx_2out(lock, satoshis) do
+    lock_bytes = BSV.Script.to_binary(lock)
+    len = byte_size(lock_bytes)
+
+    len_field =
+      cond do
+        len < 0xFD -> <<len>>
+        len <= 0xFFFF -> <<0xFD, len::little-16>>
+        true -> <<0xFE, len::little-32>>
+      end
+
+    output = <<satoshis::little-64, len_field::binary, lock_bytes::binary>>
+
+    <<
+      1::little-32,
+      1,
+      0::256,
+      0::little-32,
+      0,
+      0xFFFFFFFF::little-32,
+      # output count = 2, both carrying `lock`
+      2,
+      output::binary,
+      output::binary,
+      0::little-32
+    >>
+  end
+
+  describe "note 2231 §5 — asset_output_index selects the excised output" do
+    test "changing asset_output_index changes the derived swap pieces" do
+      {token_key_a, owner_a_pkh} = fixed_keypair(:binary.copy(<<0x11>>, 32))
+      {token_key_b, owner_b_pkh} = fixed_keypair(:binary.copy(<<0x22>>, 32))
+      {fee_key, fee_pkh} = fixed_keypair(:binary.copy(<<0x33>>, 32))
+      redemption_pkh = :binary.copy(<<0x22>>, 20)
+      dest_0_pkh = :binary.copy(<<0x44>>, 20)
+      dest_1_pkh = :binary.copy(<<0x55>>, 20)
+
+      placeholder_swap = %{
+        requested_script_hash: :binary.copy(<<0x00>>, 32),
+        requested_pkh: dest_0_pkh,
+        rate_numerator: 1,
+        rate_denominator: 1
+      }
+
+      placeholder_a = stas3_swap_lock(owner_a_pkh, redemption_pkh, placeholder_swap)
+      placeholder_b = stas3_swap_lock(owner_b_pkh, redemption_pkh, placeholder_swap)
+
+      hash_for_a =
+        Stas3Builder.compute_stas3_requested_script_hash(BSV.Script.to_binary(placeholder_b))
+
+      hash_for_b =
+        Stas3Builder.compute_stas3_requested_script_hash(BSV.Script.to_binary(placeholder_a))
+
+      swap_a = %{placeholder_swap | requested_script_hash: hash_for_a, requested_pkh: dest_0_pkh}
+      swap_b = %{placeholder_swap | requested_script_hash: hash_for_b, requested_pkh: dest_1_pkh}
+
+      lock_a = stas3_swap_lock(owner_a_pkh, redemption_pkh, swap_a)
+      lock_b = stas3_swap_lock(owner_b_pkh, redemption_pkh, swap_b)
+
+      # Each preceding tx carries its asset script at BOTH vout 0 and 1.
+      preceding_a = synthetic_preceding_tx_2out(lock_a, 5_000)
+      preceding_b = synthetic_preceding_tx_2out(lock_b, 5_000)
+      txid_a = BSV.Crypto.sha256d(preceding_a)
+      txid_b = BSV.Crypto.sha256d(preceding_b)
+
+      config = %{
+        token_inputs: [
+          %TokenInput{
+            txid: txid_a,
+            vout: 0,
+            satoshis: 5_000,
+            locking_script: lock_a,
+            private_key: token_key_a
+          },
+          %TokenInput{
+            txid: txid_b,
+            vout: 0,
+            satoshis: 5_000,
+            locking_script: lock_b,
+            private_key: token_key_b
+          }
+        ],
+        fee_txid: :binary.copy(<<0xAA>>, 32),
+        fee_vout: 2,
+        fee_satoshis: 50_000,
+        fee_locking_script: p2pkh_lock(fee_pkh),
+        fee_private_key: fee_key,
+        destinations: [
+          %Stas3OutputParams{
+            satoshis: 5_000,
+            owner_pkh: dest_0_pkh,
+            redemption_pkh: redemption_pkh,
+            freezable: false
+          },
+          %Stas3OutputParams{
+            satoshis: 5_000,
+            owner_pkh: dest_1_pkh,
+            redemption_pkh: redemption_pkh,
+            freezable: false
+          }
+        ],
+        spend_type: :transfer,
+        fee_rate: 500
+      }
+
+      pieces_idx0 = [
+        %{preceding_tx: preceding_a, asset_output_index: 0},
+        %{preceding_tx: preceding_b, asset_output_index: 0}
+      ]
+
+      pieces_idx1 = [
+        %{preceding_tx: preceding_a, asset_output_index: 1},
+        %{preceding_tx: preceding_b, asset_output_index: 1}
+      ]
+
+      {:ok, tx0} = Stas3.build_stas3_swap_swap_tx_with_pieces(config, pieces_idx0)
+      {:ok, tx1} = Stas3.build_stas3_swap_swap_tx_with_pieces(config, pieces_idx1)
+
+      unlock0 = BSV.Script.to_binary(Enum.at(tx0.inputs, 0).unlocking_script)
+      unlock1 = BSV.Script.to_binary(Enum.at(tx1.inputs, 0).unlocking_script)
+
+      # If the index were ignored (the old all-occurrences split), both
+      # builds would derive identical pieces and identical unlocking scripts.
+      refute unlock0 == unlock1
+
+      # And an out-of-range index must be rejected, not silently mishandled.
+      bad_pieces = [
+        %{preceding_tx: preceding_a, asset_output_index: 9},
+        %{preceding_tx: preceding_b, asset_output_index: 0}
+      ]
+
+      assert {:error, {:vout_out_of_range, 9}} =
+               Stas3.build_stas3_swap_swap_tx_with_pieces(config, bad_pieces)
+    end
+  end
+
   describe "verify/4 — STAS 3.0 swap-swap with §9.5 trailing pieces" do
     @doc """
     Atomic-swap engine verification with the spec v0.2.3 §9.5 trailing

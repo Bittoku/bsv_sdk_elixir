@@ -24,6 +24,25 @@ defmodule BSV.Tokens.SwapDescriptor do
       "Encoding is the same as the top-level descriptor,
        minus including the leading action byte.")          → `{:swap, %SwapDescriptor{}}`
 
+  ## `next` disambiguation (note 2231 §4)
+
+  A nested swap body carries no length prefix or tag — the cross-SDK §15
+  golden vectors pin that raw layout — so the decoder cannot key on a leading
+  action byte to tell a nested swap apart from a passive/frozen tail (a nested
+  `requestedScriptHash` beginning `0x00` or `0x02` would otherwise be misread
+  as passive/frozen). Decoding is therefore **length-based and deterministic**:
+
+    * empty tail                    → `nil`
+    * tail length `>= 60`           → nested swap body (`{:swap, _}`)
+    * tail is exactly `<<0x02>>`    → `:frozen`
+    * short tail (1..59) led by `0x00` → `{:passive, rest}`
+    * any other short tail          → malformed (`{:invalid_nested_swap, _}`)
+
+  This makes nested descriptors round-trip for every hash first byte while
+  keeping the golden vectors byte-identical. The trade-off: a `{:passive, _}`
+  payload must be `< 59` bytes (whole tail `< 60`) so it can never collide with
+  a bare 60-byte nested body — the encoder enforces this and raises otherwise.
+
   This module implements both encoding (`to_var2_bytes/1`) and decoding
   (`parse/1`) of the full recursive structure. The legacy 61-byte non-recursive
   form continues to round-trip correctly: `to_var2_bytes/1` of a descriptor
@@ -99,8 +118,20 @@ defmodule BSV.Tokens.SwapDescriptor do
   defp encode_next(nil), do: <<>>
   defp encode_next(:frozen), do: <<@action_frozen>>
 
-  defp encode_next({:passive, bytes}) when is_binary(bytes) do
+  # A passive `next` push encodes as `0x00 <> payload`. The whole tail MUST
+  # stay shorter than a bare swap body (60 bytes) so the length-based decoder
+  # (see `parse_next/1`) can never mistake it for a nested swap. Reject
+  # oversized payloads loudly rather than emit bytes that would round-trip as
+  # `{:swap, _}`.
+  defp encode_next({:passive, bytes}) when is_binary(bytes) and byte_size(bytes) < 59 do
     <<@action_passive>> <> bytes
+  end
+
+  defp encode_next({:passive, bytes}) when is_binary(bytes) do
+    raise ArgumentError,
+          "passive swap-descriptor next payload must be < 59 bytes " <>
+            "(got #{byte_size(bytes)}); larger payloads are indistinguishable " <>
+            "from a nested swap body on decode"
   end
 
   defp encode_next({:swap, %__MODULE__{} = d}) do
@@ -158,19 +189,45 @@ defmodule BSV.Tokens.SwapDescriptor do
 
   defp parse_swap_body(_), do: {:error, :truncated_swap_descriptor}
 
+  # Minimum length of a swap body (no leading 0x01): hash(32) + addr(20)
+  # + num(4) + den(4). A `next` tail this long or longer is unambiguously a
+  # nested swap; a shorter tail can only be a passive or frozen marker.
+  @swap_body_min 60
+
+  # Disambiguate the `next` tail purely by LENGTH and leading byte — never
+  # by "does it happen to parse", so decoding is deterministic and a nested
+  # `requested_script_hash` beginning with any byte (0x00 / 0x02 included)
+  # round-trips (blocker fix, note 2231 §4):
+  #
+  #   * empty tail                       → nil
+  #   * tail length >= 60                → nested swap body (recurse)
+  #   * tail is exactly <<0x02>>         → :frozen
+  #   * tail (len 1..59) starts 0x00     → {:passive, rest}
+  #   * any other short tail             → malformed (surface the nested-swap
+  #                                        parse error, i.e. :truncated_swap_descriptor)
+  #
+  # DIVERGENCE / LIMITATION (documented for cross-SDK arbitration): because a
+  # nested swap body carries no length prefix or tag (the golden §15 vectors
+  # pin that raw layout), a `{:passive, payload}` whose total tail reaches 60
+  # bytes (payload >= 59 bytes) is indistinguishable from a bare nested swap
+  # body and would be decoded as `{:swap, _}`. Passive `next` payloads are
+  # therefore bounded to < 59 bytes; the encoder enforces this.
   defp parse_next(<<>>), do: {:ok, nil}
 
-  defp parse_next(<<@action_frozen>>), do: {:ok, :frozen}
+  defp parse_next(tail) when is_binary(tail) and byte_size(tail) >= @swap_body_min do
+    case parse_swap_body(tail) do
+      {:ok, descriptor} -> {:ok, {:swap, descriptor}}
+      {:error, reason} -> {:error, {:invalid_nested_swap, reason}}
+    end
+  end
 
-  # Frozen marker followed by anything else is malformed: the frozen var2
-  # is a single-byte payload by definition (§6.2).
-  defp parse_next(<<@action_frozen, _rest::binary>>),
-    do: {:error, :extra_bytes_after_frozen_marker}
+  defp parse_next(<<@action_frozen>>), do: {:ok, :frozen}
 
   defp parse_next(<<@action_passive, rest::binary>>),
     do: {:ok, {:passive, rest}}
 
-  # Anything else: treat as a nested swap body (no leading 0x01 per spec).
+  # A short tail (1..59 bytes) that is neither the frozen marker nor a passive
+  # push cannot be a valid nested swap body — report it as such.
   defp parse_next(other) when is_binary(other) do
     case parse_swap_body(other) do
       {:ok, descriptor} -> {:ok, {:swap, descriptor}}

@@ -135,6 +135,40 @@ defmodule BSV.Tokens.Script.ReaderTest do
     assert parsed.stas3.frozen == true
   end
 
+  # Spec §6.2: a var2 push whose payload begins with the 0x02 freeze byte and
+  # carries ≥1 further byte is a FROZEN non-empty frame wrapping the original
+  # var2. The reader must classify it as frozen while exposing the recoverable
+  # pre-freeze action data — not misread it as unfrozen/custom.
+  test "classify STAS3 frozen non-empty (swap) frame recovers original var2" do
+    owner = :binary.copy(<<0xCC>>, 20)
+    redemption = :binary.copy(<<0xDD>>, 20)
+
+    swap = %{
+      requested_script_hash: :binary.copy(<<0x07>>, 32),
+      requested_pkh: :binary.copy(<<0x08>>, 20),
+      rate_numerator: 3,
+      rate_denominator: 5
+    }
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner,
+        redemption,
+        {:swap, swap},
+        true,
+        true,
+        [],
+        []
+      )
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+    assert parsed.script_type == :stas3
+    assert parsed.stas3.frozen == true
+    assert <<0x02, _::binary>> = parsed.stas3.action_data_raw
+    assert parsed.stas3.action_data_parsed == {:swap, swap}
+    assert parsed.stas3.swap_descriptor != nil
+  end
+
   # STAS 3.0 v0.1 §9.5 / §10.3 — arbitrator-free / signature-suppression sentinel.
   test "arbitrator_free_owner? true when STAS3 owner is EMPTY_HASH160" do
     empty = BSV.Tokens.Script.Templates.empty_hash160()

@@ -26,6 +26,7 @@ defmodule BSV.Tokens.Script.Stas3Fields do
           owner: <<_::160>>,
           redemption: <<_::160>>,
           flags: binary(),
+          engine: BSV.Tokens.Script.Engine.revision() | nil,
           action_data_raw: binary() | nil,
           action_data_parsed: BSV.Tokens.ActionData.t() | nil,
           swap_descriptor: BSV.Tokens.SwapDescriptor.t() | nil,
@@ -37,6 +38,7 @@ defmodule BSV.Tokens.Script.Stas3Fields do
   defstruct [
     :owner,
     :redemption,
+    :engine,
     flags: <<>>,
     action_data_raw: nil,
     action_data_parsed: nil,
@@ -62,15 +64,12 @@ end
 defmodule BSV.Tokens.Script.Reader do
   @moduledoc "Script reader for parsing STAS and STAS 3.0 locking scripts."
 
-  alias BSV.Tokens.TokenId
-  alias BSV.Tokens.Script.{ParsedScript, StasFields, Stas3Fields}
+  alias BSV.Tokens.{TokenId, ScriptFlags}
+  alias BSV.Tokens.Script.{ParsedScript, StasFields, Stas3Fields, Engine}
 
   @stas_v2_min_len 1432
   @stas_v2_redemption_offset 1411
   @stas3_base_prefix <<0x6D, 0x82, 0x73, 0x63>>
-  # Length of the canonical STAS 3.0 engine base template; the previous
-  # 2812-byte length-prefixed engine is deprecated.
-  @stas3_base_template_len 2899
 
   @doc "Parse a locking script binary and classify it."
   @spec read_locking_script(binary()) :: ParsedScript.t()
@@ -273,11 +272,14 @@ defmodule BSV.Tokens.Script.Reader do
   defp parse_stas3(<<0x14, owner::binary-size(20), rest::binary>>) do
     {:ok, action_data_raw, after_action} = read_push_data(rest)
 
-    # Skip the base template to find OP_RETURN
-    op_return_pos = @stas3_base_template_len - 1
+    # Locate the engine body by exact template match — engine-agnostic, so this
+    # works for both 0.0.9 and 0.0.11 (spec §15.6) — then read the trailing
+    # metadata that follows it: redemption PKH, flags, and service fields.
+    case Engine.detect(after_action) do
+      {:ok, {engine, engine_len}} ->
+        after_op_return =
+          binary_part(after_action, engine_len, byte_size(after_action) - engine_len)
 
-    case after_action do
-      <<_template::binary-size(op_return_pos), 0x6A, after_op_return::binary>> ->
         items = parse_push_data_items(after_op_return)
 
         redemption =
@@ -292,50 +294,45 @@ defmodule BSV.Tokens.Script.Reader do
             _ -> <<>>
           end
 
-        service_fields =
+        # Spec §15: the pushes after redemption+flags are service fields
+        # (authority addresses for freezable/confiscatable) followed by
+        # optional trailing data. Decode the flags byte to determine how
+        # many of the trailing pushes are service fields (per
+        # `ScriptFlags.service_field_count/1`) — the remainder is
+        # `optional_data`. An undecodable flags byte is treated as
+        # zero service fields, so all trailing pushes fall through to
+        # `optional_data`.
+        {service_fields, optional_data} =
           case items do
-            [_, _ | rest] -> rest
-            _ -> []
-          end
+            [_, _ | trailing] ->
+              service_field_count =
+                case ScriptFlags.decode(flags) do
+                  {:ok, decoded} -> ScriptFlags.service_field_count(decoded)
+                  {:error, _} -> 0
+                end
 
-        frozen = action_data_raw == <<0x52>>
-
-        action_data_parsed =
-          case action_data_raw do
-            <<0x01, _::binary>> = swap_data ->
-              case BSV.Tokens.Script.Stas3Builder.decode_swap_action_data(swap_data) do
-                {:ok, fields} -> {:swap, fields}
-                _ -> {:custom, swap_data}
-              end
-
-            <<0x52>> ->
-              nil
-
-            nil ->
-              nil
-
-            <<>> ->
-              nil
-
-            other ->
-              {:custom, other}
-          end
-
-        # STAS 3.0 v0.1 §6.3: parse the FULL recursive swap descriptor
-        # (including any `next` chain) when the var2 push is a swap
-        # action (leading 0x01). Independent of the legacy 61-byte
-        # `action_data_parsed` projection above.
-        swap_descriptor =
-          case action_data_raw do
-            <<0x01, _::binary>> = swap_data ->
-              case BSV.Tokens.SwapDescriptor.parse(swap_data) do
-                {:ok, descriptor} -> descriptor
-                _ -> nil
-              end
+              Enum.split(trailing, service_field_count)
 
             _ ->
-              nil
+              {[], []}
           end
+
+        # Spec §6.2 freeze marker classification. A frozen frame's var2 is
+        # either the bare `OP_2` marker (var2 read as `<<0x52>>`, empty original)
+        # or a `push(0x02 ‖ original)` whose payload begins with the `0x02`
+        # freeze byte and carries ≥1 further byte (frozen non-empty). In both
+        # cases the frame is frozen; `effective_var2` is the RECOVERED original
+        # payload, so `action_data_parsed` / `swap_descriptor` expose the
+        # recoverable pre-freeze state rather than the raw marker bytes.
+        {frozen, effective_var2} = classify_frozen_var2(action_data_raw)
+
+        action_data_parsed = parse_var2_action(effective_var2)
+
+        # STAS 3.0 v0.1 §6.3: parse the FULL recursive swap descriptor
+        # (including any `next` chain) when the recovered var2 is a swap
+        # action (leading 0x01). Independent of the legacy 61-byte
+        # `action_data_parsed` projection above.
+        swap_descriptor = parse_var2_swap_descriptor(effective_var2)
 
         %ParsedScript{
           script_type: :stas3,
@@ -343,19 +340,60 @@ defmodule BSV.Tokens.Script.Reader do
             owner: owner,
             redemption: redemption,
             flags: flags,
+            engine: engine,
             action_data_raw: action_data_raw,
             action_data_parsed: action_data_parsed,
             swap_descriptor: swap_descriptor,
             service_fields: service_fields,
-            optional_data: [],
+            optional_data: optional_data,
             frozen: frozen
           }
         }
 
-      _ ->
+      :error ->
         %ParsedScript{script_type: :unknown}
     end
   end
+
+  # Classify a raw var2 payload against the spec §6.2 freeze marker, returning
+  # `{frozen?, effective_var2}` where `effective_var2` is the recovered original
+  # payload (empty for a frozen empty frame). A non-empty frozen frame reads back
+  # as `0x02 ‖ original`; strip the freeze byte to recover the original.
+  defp classify_frozen_var2(<<0x52>>), do: {true, <<>>}
+
+  defp classify_frozen_var2(<<0x02, original::binary>>) when byte_size(original) >= 1,
+    do: {true, original}
+
+  defp classify_frozen_var2(nil), do: {false, <<>>}
+  defp classify_frozen_var2(raw) when is_binary(raw), do: {false, raw}
+
+  # Parse a (recovered) var2 payload into the legacy `ActionData.t()` projection.
+  defp parse_var2_action(<<>>), do: nil
+
+  defp parse_var2_action(<<0x01, _::binary>> = swap_data) do
+    case BSV.Tokens.Script.Stas3Builder.decode_swap_action_data(swap_data) do
+      {:ok, fields} -> {:swap, fields}
+      _ -> {:custom, swap_data}
+    end
+  end
+
+  # Augmentation directive (spec §6.4 / §15.2): action byte 0x03 followed by ≥1
+  # data byte. Checked before the generic fallback; a bare 0x03 (no data) is
+  # inert and falls through to :custom.
+  defp parse_var2_action(<<0x03, rest::binary>>) when byte_size(rest) >= 1, do: {:augment, rest}
+
+  defp parse_var2_action(other), do: {:custom, other}
+
+  # Parse a (recovered) var2 payload into the full §6.3 recursive swap
+  # descriptor, or nil when it is not a swap action.
+  defp parse_var2_swap_descriptor(<<0x01, _::binary>> = swap_data) do
+    case BSV.Tokens.SwapDescriptor.parse(swap_data) do
+      {:ok, descriptor} -> descriptor
+      _ -> nil
+    end
+  end
+
+  defp parse_var2_swap_descriptor(_), do: nil
 
   defp p2pkh?(<<0x76, 0xA9, 0x14, _pkh::binary-size(20), 0x88, 0xAC>>),
     do: true

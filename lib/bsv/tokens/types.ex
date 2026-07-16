@@ -83,6 +83,7 @@ defmodule BSV.Tokens.ActionData do
 
   @type t ::
           {:swap, swap_fields()}
+          | {:augment, binary()}
           | {:custom, binary()}
 end
 
@@ -128,6 +129,8 @@ defmodule BSV.Tokens.Stas3OutputParams do
           frozen: boolean(),
           freezable: boolean(),
           confiscatable: boolean(),
+          nft: boolean(),
+          augmentable: boolean(),
           service_fields: [binary()],
           optional_data: [binary()],
           action_data: BSV.Tokens.ActionData.t() | nil
@@ -140,6 +143,8 @@ defmodule BSV.Tokens.Stas3OutputParams do
     frozen: false,
     freezable: true,
     confiscatable: false,
+    nft: false,
+    augmentable: false,
     service_fields: [],
     optional_data: [],
     action_data: nil

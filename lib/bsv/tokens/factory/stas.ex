@@ -175,7 +175,8 @@ defmodule BSV.Tokens.Factory.Stas do
         if total_tokens != config.contract_utxo.satoshis do
           {:error, Error.amount_mismatch(config.contract_utxo.satoshis, total_tokens)}
         else
-          with {:ok, token_outputs} <- build_stas_outputs(config.destinations, config.redemption_pkh, config.splittable) do
+          with {:ok, token_outputs} <-
+                 build_stas_outputs(config.destinations, config.redemption_pkh, config.splittable) do
             tx = %Transaction{
               inputs: [make_input(config.contract_utxo), make_input(config.funding)],
               outputs: token_outputs
@@ -205,7 +206,10 @@ defmodule BSV.Tokens.Factory.Stas do
                config.redemption_pkh,
                config.splittable
              ) do
-        token_output = %Output{satoshis: config.destination.satoshis, locking_script: locking_script}
+        token_output = %Output{
+          satoshis: config.destination.satoshis,
+          locking_script: locking_script
+        }
 
         tx = %Transaction{
           inputs: [make_input(config.token_utxo), make_input(config.funding)],
@@ -238,7 +242,8 @@ defmodule BSV.Tokens.Factory.Stas do
         if total != config.token_utxo.satoshis do
           {:error, Error.amount_mismatch(config.token_utxo.satoshis, total)}
         else
-          with {:ok, token_outputs} <- build_stas_outputs(config.destinations, config.redemption_pkh, true) do
+          with {:ok, token_outputs} <-
+                 build_stas_outputs(config.destinations, config.redemption_pkh, true) do
             tx = %Transaction{
               inputs: [make_input(config.token_utxo), make_input(config.funding)],
               outputs: token_outputs
@@ -275,7 +280,11 @@ defmodule BSV.Tokens.Factory.Stas do
                    config.redemption_pkh,
                    config.splittable
                  ) do
-            token_output = %Output{satoshis: config.destination.satoshis, locking_script: locking_script}
+            token_output = %Output{
+              satoshis: config.destination.satoshis,
+              locking_script: locking_script
+            }
+
             token_inputs = Enum.map(config.token_utxos, &make_input/1)
 
             tx = %Transaction{
@@ -288,7 +297,8 @@ defmodule BSV.Tokens.Factory.Stas do
 
               # Sign token inputs
               result =
-                Enum.reduce_while(0..(length(config.token_utxos) - 1), {:ok, tx}, fn i, {:ok, tx} ->
+                Enum.reduce_while(0..(length(config.token_utxos) - 1), {:ok, tx}, fn i,
+                                                                                     {:ok, tx} ->
                   utxo = Enum.at(config.token_utxos, i)
 
                   case sign_input_from_payment(tx, i, utxo) do
@@ -424,7 +434,12 @@ defmodule BSV.Tokens.Factory.Stas do
         else
           token_inputs =
             Enum.map(config.token_inputs, fn ti ->
-              make_input(%{txid: ti.txid, vout: ti.vout, satoshis: ti.satoshis, locking_script: ti.locking_script})
+              make_input(%{
+                txid: ti.txid,
+                vout: ti.vout,
+                satoshis: ti.satoshis,
+                locking_script: ti.locking_script
+              })
             end)
 
           fee_input =
@@ -439,8 +454,12 @@ defmodule BSV.Tokens.Factory.Stas do
             # Add optional note output
             outputs =
               case Map.get(config, :note_data) do
-                nil -> stas_outputs
-                <<>> -> stas_outputs
+                nil ->
+                  stas_outputs
+
+                <<>> ->
+                  stas_outputs
+
                 data when is_binary(data) ->
                   note_script = Script.op_return([data])
                   stas_outputs ++ [%Output{satoshis: 0, locking_script: note_script}]
@@ -451,7 +470,13 @@ defmodule BSV.Tokens.Factory.Stas do
               outputs: outputs
             }
 
-            with {:ok, tx} <- add_change_output_v3(tx, config.fee_satoshis, config.fee_private_key, config.fee_rate) do
+            with {:ok, tx} <-
+                   add_change_output_v3(
+                     tx,
+                     config.fee_satoshis,
+                     config.fee_private_key,
+                     config.fee_rate
+                   ) do
               # Sign token inputs
               result =
                 Enum.reduce_while(
@@ -460,7 +485,9 @@ defmodule BSV.Tokens.Factory.Stas do
                   fn i, {:ok, tx} ->
                     ti = Enum.at(config.token_inputs, i)
                     sk = BSV.Tokens.TokenInput.resolve_signing_key(ti)
-                    template = StasTemplate.unlock_from_signing_key(sk, spend_type: config.spend_type)
+
+                    template =
+                      StasTemplate.unlock_from_signing_key(sk, spend_type: config.spend_type)
 
                     case StasTemplate.sign(template, tx, i) do
                       {:ok, sig} -> {:cont, {:ok, set_unlocking_script(tx, i, sig)}}
@@ -597,7 +624,8 @@ defmodule BSV.Tokens.Factory.Stas do
               BSV.Tokens.Script.Reader.read_locking_script(Script.to_binary(ti.locking_script))
 
             (parsed.script_type == :stas3 and parsed.stas3 != nil and parsed.stas3.frozen) or
-              (parsed.script_type == :stas and parsed.stas != nil and Map.get(parsed.stas, :frozen, false))
+              (parsed.script_type == :stas and parsed.stas != nil and
+                 Map.get(parsed.stas, :frozen, false))
           end)
 
         if frozen do

@@ -3,34 +3,25 @@ defmodule BSV.Tokens.Script.Stas3Builder do
 
   require Bitwise
   alias BSV.Script
-
-  # STAS 3.0 canonical engine base template (hex-encoded).
-  #
-  # Source of truth: `github.com/stassso/STAS-3-script-templates`
-  # (file `Template STAS 3.0`). Imported verbatim by the DXS reference
-  # SDK (`dxsapp/dxs-bsv-token-sdk`) — every encoder commit there is
-  # gated on `evaluateTransactionHex` against this engine.
-  #
-  # Byte length: 2899. SHA-256 of the hex string:
-  # `5c659f5f3abdad612c4bfd19b6034f2df0c0bcef1af1ca928d0f5a34ac3ee371`.
-  #
-  # The piece consumer is the v0.2.3 separate-pushdata pattern
-  # (`OP_OVER OP_IF OP_SWAP OP_1SUB OP_SWAP OP_3 OP_PICK OP_CAT OP_10
-  # OP_ROLL OP_CAT OP_ENDIF`, unrolled 5 times). The earlier 2812-byte
-  # template used a length-prefixed blob consumer (`OP_1 OP_SPLIT
-  # OP_IFDUP OP_IF OP_SWAP OP_SPLIT OP_ENDIF`) and is incompatible with
-  # the v0.2.3 wire format.
-  @stas3_base_template_hex "6d82736301218763007b7b517c6e5667766b517f786b517f73637c7f68517f73637c7f68517f73637c7f68517f73637c7f68517f73637c7f68766c936c7c5493686751687652937a76aa607f5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7c5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e011f7f7d7e01007e8111414136d08c5ed2bf3ba048afe6dcaebafe01005f80837e01007e7652967b537a7601ff877c0100879b7d648b6752799368537a7d9776547aa06394677768263044022079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802207c607f5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7c5f7f7c5e7f7c5d7f7c5c7f7c5b7f7c5a7f7c597f7c587f7c577f7c567f7c557f7c547f7c537f7c527f7c517f7c7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e01417e7c6421038ff83d8cf12121491609c4939dc11c4aa35503508fe432dc5a5c1905608b92186721023635954789a02e39fb7e54440b6f528d53efd65635ddad7f3c4085f97fdbdc4868ad547f7701207f01207f7701247f517f7801007e02fd00a063546752687f7801007e817f727e7b517f7c01147d887f517f7c01007e817601619f6976014ea063517c7b6776014ba06376014da063755467014d9c6352675168687f7c01007e81687f007b7b687602540b7f7701147f7c5579876b826475020100686b587a5893766b7a765155a569005379736382013ca07c517f7c51877b9a6352795487637101007c7e717101207f01147f7577776775785387646c766b8b8b7951886868677568686c6c7c6b517f7c817f788273638c7f776775010068518463517f7c01147d887f547952876372777c717c767663517f756852875779766352790152879a689b63517f77567a7567527c7681014f0161a5587a9a63015094687e68746c766b5c9388748c76795879888c8c7978886777717c567a5679538764780152879a787663517f756852879b745394768b797663517f756852877c6c766b5c936ea0637c8c768b797663517f75685287726b9b7c6c686ea0637c5394768b797663517f75685287726b9b7c6c686ea063755494797663517f756852879b676d689b63006968677568687c717167567a7568788273638c7f776775010068528463517f7c01147d887f547953876372777c677768686d6c75787653877c52879b636c75006b687c518763755279685879a9886b6b6b6b6b6b6b827763af686c6c6c6c6c6c6c547a577a7664577a577a587a597a786354807e7e676d68aa8800677b7c7651876375577a7c587a67007c68765258a569765187645294597a53795b7a7e7e78637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e6878637c8c7c53797e5a7a7e68687276647572677772755168537a76aa5a7a7d54807e597a5b7a5c7a786354807e6f7e7eaa727c7e676d6e7eaa7c687b7eaa5a7a7d877663516752687c72879b69537a6491687c7b547f77517f7853a0916901247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f77788c6301247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f777852946301247f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e816854937f77686877517f7c52797d8b9f7c53a09b91697c76638c7c587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f777c6876638c7c587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f777c6863587f77517f7c01007e817602fc00a06302fd00a063546752687f7c01007e81687f7768587f517f7801007e817602fc00a06302fd00a063546752687f7801007e81727e7b7b687f75517f7c01147d887f517f7c01007e817601619f6976014ea0637c6776014ba06376014da063755467014d9c6352675168687f7c01007e81687f68557964577988756d67716881687863567a677b68587f7c8153796353795287637b6b537a6b717c6b6b537a6b676b577a6b597a6b587a6b577a6b7c68677b93687c547f7701207f75748c7a7669765880044676a914780114748c7a76727b748c7a768291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068685c795c79636c766b7363517f7c51876301207f7c5279a8877c011c7f5579877c01147f755679879a9a6967756868687e777e7e827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e0a888201218763ac67517f07517f73637c7f6876767e767e7e02ae687e7e7c557a00740111a063005a79646b7c748c7a76697d937b7b58807e6c91677c748c7a7d58807e6c6c6c557a680114748c7a748c7a768291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068685479635f79676c766b0115797363517f7c51876301207f7c5279a8877c011c7f5579877c01147f755679879a9a6967756868687e777e7e827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7c637e677c6b7c6b7c6b7e7c6b68685979636c6c766b786b7363517f7c51876301347f77547f547f75786352797b01007e81957c01007e81965379a169676d68677568685c797363517f7c51876301347f77547f547f75786354797b01007e81957c01007e819678a169676d68677568687568740111a063748c7a76697d58807e00005c79635e79768263517f756851876c6c766b7c6b768263517f756851877b6e9b63789c6375745294797b78877b7b877d9b69637c917c689167745294797c638777637c917c91686777876391677c917c686868676d6d68687863537a6c936c6c6c567a567a54795479587a676b72937b7b5c795e796c68748c7a748c7a7b636e717b7b877b7b879a6967726d6801147b7e7c8291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068687e7c636c766b7e726b6b726b6b675b797e68827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e68740111a063748c7a76697d58807e00005c79635e79768263517f756851876c6c766b7c6b768263517f756851877b6e9b63789c6375745294797b78877b7b877d9b69637c917c689167745294797c638777637c917c91686777876391677c917c686868676d6d68687863537a6c936c6c6c567a567a54795479587a676b72937b7b5c795e796c68748c7a748c7a7b636e717b7b877b7b879a6967726d6801147b7e7c8291788251877c764f877c81510111a59b9a9b648276014ba1647602ff00a16351014c677603ffff00a16352014d6754014e68687b7b7f757e687c7e67736301509367010068687e7c636c766b7e726b6b726b6b675b797e68827602fc00a0637603ffff00a06301fe7c82546701fd7c8252687da0637f756780687e67517f75687c7e7e68597a636c6c6c6d6c6c6d6c9d687c587a9d7d7e5c79635d795880041976a9145e797e0288ac7e7e6700687d7e5c7a766302006a7c7e827602fc00a06301fd7c7e536751687f757c7e0058807c7e687d7eaa6b7e7e7e7e7e7eaa78877c6c877c6c9a9b726d726d77776a"
+  alias BSV.Tokens.Script.Engine
 
   @doc """
-  Build a STAS3 locking script.
+  Build a STAS3 locking script, auto-selecting the engine revision from `flags`.
+
+  When `freezable_or_flags` is a `BSV.Tokens.ScriptFlags` struct the engine is
+  chosen by `BSV.Tokens.ScriptFlags.engine/1` (0.0.11 when the NFT or AUGMENTABLE
+  bit is set, else 0.0.9 — spec §15.6), so a §15 NFT/augmentable flag byte can
+  never be emitted on a pre-§15 engine body. Legacy boolean callers stay pinned
+  to 0.0.9. Use `build_stas3_locking_script_with_engine/8` to pin the engine
+  explicitly.
 
   ## Parameters
   - `owner_pkh` - 20-byte owner public key hash
   - `redemption_pkh` - 20-byte redemption public key hash
   - `action_data` - optional action data (`{:swap, hash}` or `{:custom, bytes}`)
   - `frozen` - whether the token is frozen
-  - `freezable` - whether the token supports freeze operations
+  - `freezable_or_flags` - legacy `freezable` boolean, or a `ScriptFlags` struct
+    (the engine is derived from the struct)
   - `service_fields` - list of additional service field binaries
   - `optional_data` - list of additional optional data binaries
   """
@@ -44,43 +35,78 @@ defmodule BSV.Tokens.Script.Stas3Builder do
           [binary()]
         ) :: {:ok, BSV.Script.t()} | {:error, term()}
   def build_stas3_locking_script(
-        <<owner_pkh::binary-size(20)>>,
-        <<redemption_pkh::binary-size(20)>>,
+        owner_pkh,
+        redemption_pkh,
         action_data,
         frozen,
         freezable_or_flags,
         service_fields,
         optional_data
       ) do
-    {:ok, base_template} = Base.decode16(@stas3_base_template_hex, case: :mixed)
+    build_stas3_locking_script_with_engine(
+      owner_pkh,
+      redemption_pkh,
+      action_data,
+      frozen,
+      freezable_or_flags,
+      default_engine_for(freezable_or_flags),
+      service_fields,
+      optional_data
+    )
+  end
+
+  # Engine revision to use when the caller does not pin one: derive it from a
+  # `ScriptFlags` struct (0.0.11 for NFT/AUGMENTABLE, §15.6), else default legacy
+  # boolean callers to 0.0.9.
+  defp default_engine_for(%BSV.Tokens.ScriptFlags{} = flags),
+    do: BSV.Tokens.ScriptFlags.engine(flags)
+
+  defp default_engine_for(_freezable_bool), do: :v0_0_9
+
+  @doc """
+  Build a STAS 3.0 locking script on an explicit `engine` revision
+  (`:v0_0_9` | `:v0_0_11`, see `BSV.Tokens.Script.Engine`).
+
+  Identical to `build_stas3_locking_script/7` but pins the engine body — required
+  for NFT / augmentable tokens, which must be built on 0.0.11 (spec §15.6). Pass
+  `BSV.Tokens.Script.Engine.select_engine(ScriptFlags.encode(flags))` to choose
+  the revision automatically from the flags.
+  """
+  @spec build_stas3_locking_script_with_engine(
+          <<_::160>>,
+          <<_::160>>,
+          BSV.Tokens.ActionData.t() | nil,
+          boolean(),
+          boolean() | BSV.Tokens.ScriptFlags.t(),
+          Engine.revision(),
+          [binary()],
+          [binary()]
+        ) :: {:ok, BSV.Script.t()} | {:error, term()}
+  def build_stas3_locking_script_with_engine(
+        <<owner_pkh::binary-size(20)>>,
+        <<redemption_pkh::binary-size(20)>>,
+        action_data,
+        frozen,
+        freezable_or_flags,
+        engine,
+        service_fields,
+        optional_data
+      ) do
+    base_template = Engine.template_bytes(engine)
 
     script = <<>>
 
     # 1. Push owner PKH (OP_DATA_20 + 20 bytes)
     script = script <> <<0x14>> <> owner_pkh
 
-    # 2. Action data encoding
-    script =
-      case {frozen, action_data} do
-        {false, nil} ->
-          script <> <<0x00>>
-
-        {true, nil} ->
-          script <> <<0x52>>
-
-        # STAS 3.0 v0.1 §6.3 recursive swap descriptor: a full
-        # SwapDescriptor struct (possibly carrying a `next` chain) is
-        # encoded directly via SwapDescriptor.to_var2_bytes/1.
-        {_, {:swap, %BSV.Tokens.SwapDescriptor{} = descriptor}} ->
-          script <> push_data(BSV.Tokens.SwapDescriptor.to_var2_bytes(descriptor))
-
-        # Legacy 61-byte non-recursive swap_fields() map.
-        {_, {:swap, %{} = fields}} ->
-          script <> push_data(encode_swap_action_data(fields))
-
-        {_, {:custom, bytes}} ->
-          script <> push_data(bytes)
-      end
+    # 2. var2 (action data) encoding — spec §6.2 / §6.3 / §6.4.
+    #
+    # An UNfrozen frame pushes the raw action-data payload (empty push when
+    # there is none). A FROZEN frame carries the freeze marker: bare `OP_2`
+    # (0x52) when var2 was empty, else `push(0x02 ‖ original_payload)` so the
+    # original swap-descriptor / augment / custom var2 is preserved inside the
+    # frozen marker and can be recovered on unfreeze (mirrors `freeze_var2/1`).
+    script = script <> encode_var2(frozen, action_data)
 
     # 3. Base template
     script = script <> base_template
@@ -122,6 +148,34 @@ defmodule BSV.Tokens.Script.Stas3Builder do
 
   def build_stas3_flags(true), do: <<0x01>>
   def build_stas3_flags(false), do: <<0x00>>
+
+  # Encode the var2 field (owner-adjacent action-data push) of a STAS 3.0
+  # locking script (spec §6.2). `frozen` selects the freeze-marker form;
+  # `action_data` is the unfrozen `ActionData.t()` (or nil for an empty var2).
+  # Returns the wire bytes of the single var2 push instruction.
+  defp encode_var2(frozen, action_data),
+    do: encode_var2_payload(frozen, action_data_payload_or_empty(action_data))
+
+  # Empty payload freezes to bare `OP_2`; a non-empty payload freezes to
+  # `push(0x02 ‖ payload)` so the original var2 survives inside the marker.
+  defp encode_var2_payload(false, <<>>), do: <<0x00>>
+  defp encode_var2_payload(true, <<>>), do: <<0x52>>
+  defp encode_var2_payload(false, payload), do: push_data(payload)
+  defp encode_var2_payload(true, payload), do: push_data(<<0x02>> <> payload)
+
+  defp action_data_payload_or_empty(nil), do: <<>>
+  defp action_data_payload_or_empty(action_data), do: action_data_payload(action_data)
+
+  # Raw var2 payload bytes for an `ActionData.t()` (WITHOUT push framing or the
+  # freeze marker). A full §6.3 recursive `SwapDescriptor` emits its complete
+  # encoding; the legacy 61-byte swap_fields map emits its non-recursive form;
+  # an augment directive emits `0x03 ‖ data`; custom carries its bytes verbatim.
+  defp action_data_payload({:swap, %BSV.Tokens.SwapDescriptor{} = descriptor}),
+    do: BSV.Tokens.SwapDescriptor.to_var2_bytes(descriptor)
+
+  defp action_data_payload({:swap, %{} = fields}), do: encode_swap_action_data(fields)
+  defp action_data_payload({:augment, data}), do: <<0x03>> <> data
+  defp action_data_payload({:custom, bytes}), do: bytes
 
   @doc "Push data with appropriate length prefix."
   @spec push_data(binary()) :: binary()

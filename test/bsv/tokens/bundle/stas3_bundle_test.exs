@@ -117,7 +117,10 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
         :ets.insert(calls, {:unlocking_calls, prev ++ [args]})
 
         # Return a dummy unlocking script
-        {:ok, %Script{chunks: [{:data, :binary.copy(<<0x51>>, 72)}, {:data, :binary.copy(<<0x02>>, 33)}]}}
+        {:ok,
+         %Script{
+           chunks: [{:data, :binary.copy(<<0x51>>, 72)}, {:data, :binary.copy(<<0x02>>, 33)}]
+         }}
       end,
       fee_rate: 500
     }
@@ -140,14 +143,17 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "1. single UTXO, single recipient — simplest case, 1 tx" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [%{recipient: r, satoshis: 1000}]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [%{recipient: r, satoshis: 1000}]
+        })
 
       assert is_list(result.transactions)
       assert length(result.transactions) == 1
@@ -157,19 +163,22 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "2. single UTXO, 4 recipients — 1 tx with 4 outputs" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [
-          %{recipient: r, satoshis: 250},
-          %{recipient: r, satoshis: 250},
-          %{recipient: r, satoshis: 250},
-          %{recipient: r, satoshis: 250}
-        ]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [
+            %{recipient: r, satoshis: 250},
+            %{recipient: r, satoshis: 250},
+            %{recipient: r, satoshis: 250},
+            %{recipient: r, satoshis: 250}
+          ]
+        })
 
       assert length(result.transactions) == 1
     end
@@ -177,20 +186,23 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "3. single UTXO, 5 recipients — 2 txs (3 + change, then 2)" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200}
-        ]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200}
+          ]
+        })
 
       assert length(result.transactions) == 2
     end
@@ -213,10 +225,11 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
 
       outputs = for _ <- 1..recipients_count, do: %{recipient: r, satoshis: 1}
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: outputs,
-        note: [<<0xDE, 0xAD, 0xBE, 0xEF>>]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: outputs,
+          note: [<<0xDE, 0xAD, 0xBE, 0xEF>>]
+        })
 
       # 301 recipients: ceil((301-1)/3) = 100 txs
       assert length(result.transactions) == 100
@@ -238,20 +251,22 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
       bundle_setup = make_bundle([utxo1, utxo2])
 
       # Override get_transactions to return source txs based on the utxos
-      bundle = %{bundle_setup.bundle |
-        get_transactions: fn _txids ->
-          # Build minimal source transactions for each utxo
-          tx1 = build_source_tx(utxo1)
-          tx2 = build_source_tx(utxo2)
-          %{utxo1.txid_hex => tx1, utxo2.txid_hex => tx2}
-        end
+      bundle = %{
+        bundle_setup.bundle
+        | get_transactions: fn _txids ->
+            # Build minimal source transactions for each utxo
+            tx1 = build_source_tx(utxo1)
+            tx2 = build_source_tx(utxo2)
+            %{utxo1.txid_hex => tx1, utxo2.txid_hex => tx2}
+          end
       }
 
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [%{recipient: r, satoshis: 1000}]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [%{recipient: r, satoshis: 1000}]
+        })
 
       assert is_list(result.transactions)
       # 1 merge tx + 1 transfer tx
@@ -269,20 +284,22 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
 
       bundle_setup = make_bundle([utxo1, utxo2])
 
-      bundle = %{bundle_setup.bundle |
-        get_transactions: fn _txids ->
-          tx1 = build_source_tx(utxo1)
-          tx2 = build_source_tx(utxo2)
-          %{utxo1.txid_hex => tx1, utxo2.txid_hex => tx2}
-        end
+      bundle = %{
+        bundle_setup.bundle
+        | get_transactions: fn _txids ->
+            tx1 = build_source_tx(utxo1)
+            tx2 = build_source_tx(utxo2)
+            %{utxo1.txid_hex => tx1, utxo2.txid_hex => tx2}
+          end
       }
 
       r = recipient(key_to_address(stas_key))
 
       # Request only 800 of 1100 total
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [%{recipient: r, satoshis: 800}]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [%{recipient: r, satoshis: 800}]
+        })
 
       assert is_list(result.transactions)
       assert length(result.transactions) >= 2
@@ -293,23 +310,26 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "7. note attached only to final transaction" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
       note = [<<0xAA, 0xBB, 0xCC>>]
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200}
-        ],
-        note: note
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200}
+          ],
+          note: note
+        })
 
       assert length(result.transactions) == 2
 
@@ -334,7 +354,9 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "8. freeze/unfreeze set correct spend type flags" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle, calls_table: calls} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
@@ -358,7 +380,9 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "8b. transfer/swap/confiscation set is_freeze_like=false" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       r = recipient(key_to_address(stas_key))
 
@@ -389,20 +413,23 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "9. fee chaining works — each tx feeds fee change to next" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo], 100_000)
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200},
-          %{recipient: r, satoshis: 200}
-        ]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200},
+            %{recipient: r, satoshis: 200}
+          ]
+        })
 
       assert length(result.transactions) == 2
 
@@ -435,7 +462,9 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "10. empty outputs rejected" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
 
@@ -447,7 +476,9 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "11. zero satoshi output rejected" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
@@ -462,14 +493,17 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "12. insufficient STAS balance returns message, not error" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 100, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 100, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [%{recipient: r, satoshis: 101}]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [%{recipient: r, satoshis: 101}]
+        })
 
       assert result.message == "Insufficient STAS tokens balance"
       assert result.fee_satoshis == 0
@@ -480,9 +514,10 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
       %{bundle: bundle} = make_bundle([])
       r = recipient("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
 
-      {:ok, result} = Stas3Bundle.transfer(bundle, %{
-        outputs: [%{recipient: r, satoshis: 1000}]
-      })
+      {:ok, result} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [%{recipient: r, satoshis: 1000}]
+        })
 
       assert result.message == "Insufficient STAS tokens balance"
       assert result.fee_satoshis == 0
@@ -563,15 +598,19 @@ defmodule BSV.Tokens.Bundle.Stas3BundleTest do
     test "create_transfer_bundle matches transfer/2" do
       stas_key = test_key()
       owner_pkh = key_to_pkh(stas_key)
-      utxo = make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
+
+      utxo =
+        make_stas_utxo(String.duplicate("aa", 32), 1000, owner_pkh, :binary.copy(<<0xBB>>, 20))
 
       %{bundle: bundle} = make_bundle([utxo])
       r = recipient(key_to_address(stas_key))
 
       {:ok, legacy} = Stas3Bundle.create_transfer_bundle(bundle, 1000, r)
-      {:ok, new_api} = Stas3Bundle.transfer(bundle, %{
-        outputs: [%{recipient: r, satoshis: 1000}]
-      })
+
+      {:ok, new_api} =
+        Stas3Bundle.transfer(bundle, %{
+          outputs: [%{recipient: r, satoshis: 1000}]
+        })
 
       assert length(legacy.transactions) == length(new_api.transactions)
     end

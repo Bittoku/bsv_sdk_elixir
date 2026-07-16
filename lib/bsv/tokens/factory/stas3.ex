@@ -12,7 +12,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   alias BSV.Script.Address
   alias BSV.Tokens.Error
   alias BSV.Tokens.SigningKey
-  alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates}
+  alias BSV.Tokens.Script.{Stas3Builder, Stas3Pieces, Templates, Reader}
+  alias BSV.Tokens.ScriptFlags
   alias BSV.Tokens.Stas3.Validate, as: Stas3Validate
   alias BSV.Tokens.Template.Stas3, as: Stas3Template
   alias BSV.Tokens.Factory.Stas3.WitnessBuilder
@@ -27,7 +28,17 @@ defmodule BSV.Tokens.Factory.Stas3 do
           funding_locking_script: Script.t(),
           funding_private_key: PrivateKey.t() | nil,
           funding_key: SigningKey.t() | nil,
-          outputs: [%{satoshis: non_neg_integer(), owner_pkh: <<_::160>>, freezable: boolean()}],
+          outputs: [
+            %{
+              required(:satoshis) => non_neg_integer(),
+              required(:owner_pkh) => <<_::160>>,
+              optional(:freezable) => boolean(),
+              optional(:confiscatable) => boolean(),
+              optional(:nft) => boolean(),
+              optional(:augmentable) => boolean(),
+              optional(:action_data) => BSV.Tokens.ActionData.t() | nil
+            }
+          ],
           fee_rate: non_neg_integer()
         }
 
@@ -92,19 +103,6 @@ defmodule BSV.Tokens.Factory.Stas3 do
       {:ok, unlocker} -> P2MPKH.sign(unlocker, tx, input_index)
       {:error, _} = err -> err
     end
-  end
-
-  # Derive an address string from a signing key (for change outputs).
-  # P2PKH: Base58Check-encoded PKH.
-  # P2MPKH: Not applicable for Base58 addresses — returns the PKH address of
-  # the first key as a fallback for change. In practice, issuance change should
-  # go back to the same locking script type, so we use locking_script_from_signing_key.
-  defp change_address_from_signing_key({:single, key}), do: change_address(key)
-
-  defp change_address_from_signing_key({:multi, _keys, _multisig} = _sk) do
-    # P2MPKH change uses the same multisig locking script, not a Base58 address.
-    # This function is only called for P2PKH; for P2MPKH, use locking_script_from_signing_key.
-    raise "use locking_script_from_signing_key for P2MPKH change outputs"
   end
 
   # Add fee change output, dispatching on signing key type for the change script.
@@ -353,6 +351,21 @@ defmodule BSV.Tokens.Factory.Stas3 do
       config.token_inputs == [] or length(config.token_inputs) > 2 ->
         {:error, Error.invalid_destination("STAS3 base tx requires 1 or 2 token inputs")}
 
+      # Spec §15.1: a plain-transfer spend consuming an NFT must consume exactly
+      # one STAS input (non-mergeable) and produce exactly one output
+      # (non-splittable). Only the transfer funnel is gated; swap (via its own
+      # validator) and confiscation carry their own output semantics and reject
+      # NFT inputs upstream.
+      Map.get(config, :spend_type) == :transfer and
+        Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) and
+          length(config.token_inputs) != 1 ->
+        {:error, :nft_not_mergeable}
+
+      Map.get(config, :spend_type) == :transfer and
+        Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) and
+          length(config.destinations) != 1 ->
+        {:error, :nft_output_count}
+
       true ->
         total_in = Enum.sum(Enum.map(config.token_inputs, & &1.satoshis))
         total_out = Enum.sum(Enum.map(config.destinations, & &1.satoshis))
@@ -373,7 +386,20 @@ defmodule BSV.Tokens.Factory.Stas3 do
               config.fee_locking_script
             )
 
-          with {:ok, stas3_outputs} <- build_stas3_dest_outputs(config.destinations) do
+          # Spec §5.2.2 / §15: STAS 3.0 capability flags are immutable across a
+          # spend, so force every destination to carry the consumed inputs'
+          # capability flags before building outputs (see
+          # `enforce_input_capability_flags/2`).
+          enforced_destinations =
+            enforce_input_capability_flags(config.token_inputs, config.destinations)
+
+          with {:ok, stas3_outputs} <- build_stas3_dest_outputs(enforced_destinations) do
+            # Spec §6.4 / §15.2: if a consumed NFT+AUGMENTABLE input carries an
+            # augmentation directive, append its data to the sole token output
+            # (the NFT invariant guarantees exactly one) before signing so the
+            # input signatures commit to the appended tail.
+            stas3_outputs = apply_augment_directive(stas3_outputs, config)
+
             tx = %Transaction{
               inputs: token_inputs ++ [fee_input],
               outputs: stas3_outputs
@@ -437,45 +463,122 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   Per spec §9.2 (enforced before signing via `BSV.Tokens.Stas3.Validate.freeze/2`):
 
+    * exactly one token input (a freeze/unfreeze is a single-UTXO spend; the
+      base builder would otherwise sign a second, unvalidated token input),
     * exactly one destination (a single STAS output),
     * `owner_pkh` and `redemption_pkh` byte-identical to the input,
     * the input's `flags` field has the FREEZABLE bit set.
 
-  Returns `{:error, :freeze_output_count}`, `{:error, :freeze_field_drift}`,
-  or `{:error, :freeze_flag_not_set}` on validation failure.
+  Returns `{:error, :freeze_input_count}`, `{:error, :freeze_output_count}`,
+  `{:error, :freeze_field_drift}`, or `{:error, :freeze_flag_not_set}` on
+  validation failure.
   """
   @spec build_stas3_freeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_freeze_tx(config) do
-    frozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: true} end)
+    with :ok <- check_single_freeze_input(config.token_inputs) do
+      # Spec §6.2 / §9.2: a freeze must preserve the source UTXO's original
+      # `var2`. Carry it into every destination as the pre-freeze action data;
+      # the builder wraps it in the frozen marker (`0x02 ‖ original`, or bare
+      # `OP_2` for an empty var2) so a swap-descriptor / augment / custom var2 is
+      # never silently dropped.
+      frozen_action_data = frozen_var2_from_source(hd(config.token_inputs))
 
-    with :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
-      build_stas3_base_tx(
-        config
-        |> Map.put(:spend_type, :freeze_unfreeze)
-        |> Map.put(:destinations, frozen_dests)
-        |> Map.put_new(:tx_type, :regular)
-      )
+      frozen_dests =
+        Enum.map(config.destinations, fn d ->
+          %{d | frozen: true, action_data: frozen_action_data}
+        end)
+
+      with :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
+        build_stas3_base_tx(
+          config
+          |> Map.put(:spend_type, :freeze_unfreeze)
+          |> Map.put(:destinations, frozen_dests)
+          |> Map.put_new(:tx_type, :regular)
+        )
+      end
     end
   end
 
   @doc """
   Build a STAS3 unfreeze transaction.
 
-  Same §9.2 constraints as `build_stas3_freeze_tx/1`.
+  Same §9.2 constraints as `build_stas3_freeze_tx/1` (including the
+  exactly-one-token-input requirement; returns `{:error, :freeze_input_count}`
+  otherwise).
   """
   @spec build_stas3_unfreeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_unfreeze_tx(config) do
-    unfrozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: false} end)
+    with :ok <- check_single_freeze_input(config.token_inputs) do
+      # Spec §6.2 / §9.2: recover the original `var2` wrapped inside the frozen
+      # source marker so the unfrozen output round-trips the pre-freeze state.
+      # A frozen non-empty frame reads back as `0x02 ‖ original`; an empty /
+      # bare-`OP_2` frame recovers to no var2 (nil).
+      unfrozen_action_data = unfrozen_var2_from_source(hd(config.token_inputs))
 
-    with :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
-      build_stas3_base_tx(
-        config
-        |> Map.put(:spend_type, :freeze_unfreeze)
-        |> Map.put(:destinations, unfrozen_dests)
-        |> Map.put_new(:tx_type, :regular)
-      )
+      unfrozen_dests =
+        Enum.map(config.destinations, fn d ->
+          %{d | frozen: false, action_data: unfrozen_action_data}
+        end)
+
+      with :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
+        build_stas3_base_tx(
+          config
+          |> Map.put(:spend_type, :freeze_unfreeze)
+          |> Map.put(:destinations, unfrozen_dests)
+          |> Map.put_new(:tx_type, :regular)
+        )
+      end
     end
   end
+
+  # Spec §9.2: freeze / unfreeze is a single-UTXO spend. `Stas3Validate.freeze/2`
+  # only inspects `hd(token_inputs)`, but `build_stas3_base_tx/1` will sign every
+  # token input it is handed (up to two). Reject any input count other than one
+  # so a second, never-validated token input can never be signed into a
+  # freeze/unfreeze covenant.
+  defp check_single_freeze_input([_single]), do: :ok
+  defp check_single_freeze_input(_), do: {:error, :freeze_input_count}
+
+  # Spec §6.2: recover the source UTXO's original (unfrozen) `var2` payload so a
+  # freeze can preserve it inside the frozen marker. Returns a `{:custom, raw}`
+  # ActionData carrying the exact original bytes, or nil for an empty var2
+  # (which freezes to the bare `OP_2` marker).
+  defp frozen_var2_from_source(token_input) do
+    case source_stas3_fields(token_input) do
+      %{frozen: false, action_data_raw: raw} when is_binary(raw) and byte_size(raw) > 0 ->
+        {:custom, raw}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Spec §6.2: recover the original `var2` wrapped inside a frozen source UTXO so
+  # an unfreeze restores it. A frozen non-empty frame reads back as
+  # `0x02 ‖ original`; strip the freeze byte to recover the original payload
+  # (as `{:custom, original}`). A bare-`OP_2` (empty original) frame recovers to
+  # nil (no var2).
+  defp unfrozen_var2_from_source(token_input) do
+    case source_stas3_fields(token_input) do
+      %{frozen: true, action_data_raw: <<0x02, original::binary>>}
+      when byte_size(original) >= 1 ->
+        {:custom, original}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Parsed STAS 3.0 fields for a token input's locking script, or nil when it is
+  # not a STAS 3.0 frame (defensive; freeze/unfreeze inputs are always STAS 3.0).
+  defp source_stas3_fields(%{locking_script: %Script{} = script}) do
+    case Reader.read_locking_script(Script.to_binary(script)) do
+      %{script_type: :stas3, stas3: %{} = fields} -> fields
+      _ -> nil
+    end
+  end
+
+  defp source_stas3_fields(_), do: nil
 
   @doc """
   Build a STAS3 split transaction.
@@ -502,6 +605,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
       length(config.destinations) < 1 or length(config.destinations) > 4 ->
         {:error, Error.invalid_destination("split requires 1-4 destinations")}
+
+      # Spec §15.1: an NFT is indivisible — splitting it is forbidden outright.
+      Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) ->
+        {:error, :nft_not_splittable}
 
       true ->
         build_stas3_base_tx(
@@ -537,6 +644,10 @@ defmodule BSV.Tokens.Factory.Stas3 do
       length(config.destinations) < 1 or length(config.destinations) > 2 ->
         {:error, Error.invalid_destination("merge requires 1-2 destinations")}
 
+      # Spec §15.1: an NFT is non-mergeable — reject if either input is an NFT.
+      Enum.any?(config.token_inputs, &Stas3Validate.nft?/1) ->
+        {:error, :nft_not_mergeable}
+
       true ->
         # Two-input merge → §8.1 txType = :merge_2.
         build_stas3_base_tx(
@@ -564,7 +675,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   """
   @spec build_stas3_confiscate_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_confiscate_tx(config) do
-    with :ok <- validate_all(config.token_inputs, &Stas3Validate.confiscation/1) do
+    with :ok <- validate_all(config.token_inputs, &Stas3Validate.confiscation/1),
+         :ok <- reject_nft_spend_path(config.token_inputs) do
       # Confiscation respects the caller's `:tx_type` if provided; defaults
       # to `:regular` (txType byte 0) per §4 / §9.3 (no encoded restriction).
       build_stas3_base_tx(
@@ -600,7 +712,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
         {:error, Error.invalid_destination("swap cancellation requires exactly 1 token input")}
 
       true ->
-        with :ok <- Stas3Validate.swap_cancel(hd(config.token_inputs), config.destinations) do
+        with :ok <- reject_nft_spend_path(config.token_inputs),
+             :ok <- Stas3Validate.swap_cancel(hd(config.token_inputs), config.destinations) do
           build_stas3_base_tx(
             config
             |> Map.put(:spend_type, :swap_cancellation)
@@ -829,7 +942,12 @@ defmodule BSV.Tokens.Factory.Stas3 do
   """
   @spec build_stas3_swap_swap_tx_with_pieces(
           base_config(),
-          [%{required(:preceding_tx) => binary(), required(:asset_output_index) => non_neg_integer()}]
+          [
+            %{
+              required(:preceding_tx) => binary(),
+              required(:asset_output_index) => non_neg_integer()
+            }
+          ]
         ) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_swap_swap_tx_with_pieces(config, pieces)
       when is_list(pieces) and length(pieces) == 2 do
@@ -839,7 +957,8 @@ defmodule BSV.Tokens.Factory.Stas3 do
   end
 
   def build_stas3_swap_swap_tx_with_pieces(_config, _pieces),
-    do: {:error, Error.invalid_destination("swap-swap with pieces requires exactly 2 piece params")}
+    do:
+      {:error, Error.invalid_destination("swap-swap with pieces requires exactly 2 piece params")}
 
   # Splice the spec §9.5 DXS-aligned trailing block IN PLACE OF the bare
   # txType byte at slot 18 for BOTH STAS inputs' unlocking scripts.
@@ -859,6 +978,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
   defp append_swap_trailing_pieces(tx, token_inputs, pieces) do
     Enum.reduce_while(0..1, {:ok, tx}, fn i, {:ok, acc_tx} ->
       counterparty_idx = 1 - i
+
       counterparty_locking_bin =
         token_inputs
         |> Enum.at(counterparty_idx)
@@ -875,22 +995,36 @@ defmodule BSV.Tokens.Factory.Stas3 do
             |> Enum.at(counterparty_idx)
             |> Map.fetch!(:source_tx_out_index)
 
-          counterparty_preceding_tx =
-            pieces |> Enum.at(counterparty_idx) |> Map.fetch!(:preceding_tx)
+          counterparty_piece_params = Enum.at(pieces, counterparty_idx)
+          counterparty_preceding_tx = Map.fetch!(counterparty_piece_params, :preceding_tx)
+          counterparty_asset_index = Map.fetch!(counterparty_piece_params, :asset_output_index)
 
-          counterparty_pieces =
-            split_preceding_tx_by_asset_tail(counterparty_preceding_tx, counterparty_tail)
+          # Spec §9.5 back-to-genesis: the asset script must be excised from
+          # the SPECIFIC output the counterparty input spends
+          # (`asset_output_index`), not from every output whose tail happens
+          # to match. Deriving pieces from the wrong output would produce an
+          # invalid reconstruction for preceding txs with multiple STAS-like
+          # outputs (note 2231 §5).
+          case split_preceding_tx_at_output(
+                 counterparty_preceding_tx,
+                 counterparty_tail,
+                 counterparty_asset_index
+               ) do
+            {:ok, counterparty_pieces} ->
+              trailing_bytes =
+                minimal_numeric_push(counterparty_vout) <>
+                  Enum.reduce(counterparty_pieces, <<>>, fn p, acc -> acc <> pushdata(p) end) <>
+                  minimal_numeric_push(length(counterparty_pieces)) <>
+                  pushdata(counterparty_tail) <>
+                  minimal_numeric_push(1)
 
-          trailing_bytes =
-            minimal_numeric_push(counterparty_vout) <>
-              Enum.reduce(counterparty_pieces, <<>>, fn p, acc -> acc <> pushdata(p) end) <>
-              minimal_numeric_push(length(counterparty_pieces)) <>
-              pushdata(counterparty_tail) <>
-              minimal_numeric_push(1)
+              case splice_swap_trailing_in_place_of_tx_type(acc_tx, i, trailing_bytes) do
+                {:ok, updated_tx} -> {:cont, {:ok, updated_tx}}
+                {:error, _} = err -> {:halt, err}
+              end
 
-          case splice_swap_trailing_in_place_of_tx_type(acc_tx, i, trailing_bytes) do
-            {:ok, updated_tx} -> {:cont, {:ok, updated_tx}}
-            {:error, _} = err -> {:halt, err}
+            {:error, _} = err ->
+              {:halt, err}
           end
       end
     end)
@@ -914,7 +1048,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp skip_one_push(<<op, rest::binary>>) when op >= 0x51 and op <= 0x60, do: rest
 
-  defp skip_one_push(<<len, body::binary-size(len), rest::binary>>)
+  defp skip_one_push(<<len, _body::binary-size(len), rest::binary>>)
        when len >= 0x01 and len <= 0x4B,
        do: rest
 
@@ -926,29 +1060,35 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp skip_one_push(_), do: nil
 
-  # Split `preceding_tx` by every occurrence of `asset_tail`, returning
-  # the gap pieces in reverse-of-tx-order (last gap first, first gap
-  # last). Mirrors DXS `splitDstasPreviousTransactionByCounterpartyScript`
-  # + `.reverse()` from `input-builder.ts`.
-  #
-  # `do_split` builds the natural-order list with the last gap at the
-  # head (prepended each iteration); we then leave it as-is to match
-  # the engine's expected reverse-of-tx-order. (No additional
-  # `Enum.reverse` — that would put it back in natural order.)
-  defp split_preceding_tx_by_asset_tail(preceding_tx, asset_tail)
+  # Split `preceding_tx` around the `asset_tail` occurrence that belongs to the
+  # output at `asset_output_index`, returning the two gap pieces
+  # `[after, before]` in reverse-of-tx-order (later gap first) — the order the
+  # canonical engine expects. Mirrors DXS
+  # `splitDstasPreviousTransactionByCounterpartyScript` + `.reverse()`, but
+  # excises ONLY the named asset output's script rather than every tail match,
+  # so a preceding tx with multiple STAS-like outputs reconstructs correctly
+  # (note 2231 §5).
+  @spec split_preceding_tx_at_output(binary(), binary(), non_neg_integer()) ::
+          {:ok, [binary()]} | {:error, term()}
+  defp split_preceding_tx_at_output(preceding_tx, asset_tail, asset_output_index)
        when byte_size(asset_tail) > 0 do
-    do_split(preceding_tx, asset_tail, [])
-  end
+    with {:ok, {script_start, script_len}} <-
+           Stas3Pieces.locate_output_script(preceding_tx, asset_output_index) do
+      script_bytes = binary_part(preceding_tx, script_start, script_len)
 
-  defp do_split(remaining, asset_tail, acc) do
-    case :binary.match(remaining, asset_tail) do
-      :nomatch ->
-        [remaining | acc]
+      case :binary.match(script_bytes, asset_tail) do
+        :nomatch ->
+          {:error, {:asset_tail_not_in_output, asset_output_index}}
 
-      {pos, len} ->
-        head = binary_part(remaining, 0, pos)
-        tail = binary_part(remaining, pos + len, byte_size(remaining) - pos - len)
-        do_split(tail, asset_tail, [head | acc])
+        {rel_pos, len} ->
+          abs_pos = script_start + rel_pos
+          before = binary_part(preceding_tx, 0, abs_pos)
+
+          after_tail =
+            binary_part(preceding_tx, abs_pos + len, byte_size(preceding_tx) - abs_pos - len)
+
+          {:ok, [after_tail, before]}
+      end
     end
   end
 
@@ -1075,7 +1215,7 @@ defmodule BSV.Tokens.Factory.Stas3 do
     do: parse_chunks_loop(rest, [{0x00, <<0x00>>} | acc])
 
   defp parse_chunks_loop(<<op, rest::binary>>, acc)
-       when (op >= 0x4F and op <= 0x60) and op != 0x50,
+       when op >= 0x4F and op <= 0x60 and op != 0x50,
        do: parse_chunks_loop(rest, [{op, <<op>>} | acc])
 
   defp parse_chunks_loop(<<len, body::binary-size(len), rest::binary>>, acc)
@@ -1183,33 +1323,47 @@ defmodule BSV.Tokens.Factory.Stas3 do
 
   defp build_stas3_outputs(outputs, redemption_pkh) do
     Enum.reduce_while(outputs, {:ok, []}, fn out, {:ok, acc} ->
-      case Stas3Builder.build_stas3_locking_script(
-             out.owner_pkh,
-             redemption_pkh,
-             nil,
-             false,
-             Map.get(out, :freezable, true),
-             [],
-             []
-           ) do
-        {:ok, script} ->
-          output = %Output{satoshis: out.satoshis, locking_script: script}
-          {:cont, {:ok, acc ++ [output]}}
+      flags = %ScriptFlags{
+        freezable: Map.get(out, :freezable, true),
+        confiscatable: Map.get(out, :confiscatable, false),
+        nft: Map.get(out, :nft, false),
+        augmentable: Map.get(out, :augmentable, false)
+      }
 
-        error ->
-          {:halt, error}
+      # Reject a standalone AUGMENTABLE bit at mint time (§15.2); encode the full
+      # flags byte and select the engine (0.0.11 for NFT/AUGMENTABLE). An
+      # optional `action_data` mints the token with a var2 directive (§6.4).
+      with :ok <- ScriptFlags.validate(flags),
+           {:ok, script} <-
+             Stas3Builder.build_stas3_locking_script_with_engine(
+               out.owner_pkh,
+               redemption_pkh,
+               Map.get(out, :action_data, nil),
+               false,
+               flags,
+               ScriptFlags.engine(flags),
+               [],
+               []
+             ) do
+        output = %Output{satoshis: out.satoshis, locking_script: script}
+        {:cont, {:ok, acc ++ [output]}}
+      else
+        {:error, _} = error -> {:halt, error}
       end
     end)
   end
 
   defp build_stas3_dest_outputs(destinations) do
     Enum.reduce_while(destinations, {:ok, []}, fn dest, {:ok, acc} ->
-      case Stas3Builder.build_stas3_locking_script(
+      flags = dest_flags(dest)
+
+      case Stas3Builder.build_stas3_locking_script_with_engine(
              dest.owner_pkh,
              dest.redemption_pkh,
              dest.action_data,
              dest.frozen,
-             dest.freezable,
+             flags,
+             ScriptFlags.engine(flags),
              dest.service_fields,
              dest.optional_data
            ) do
@@ -1223,6 +1377,157 @@ defmodule BSV.Tokens.Factory.Stas3 do
     end)
   end
 
+  # Spec §5.2.2 / §15: the four STAS 3.0 capability flags (freezable,
+  # confiscatable, nft, augmentable) are fixed at issuance and immutable across
+  # every spend. When all consumed token inputs carry an identical capability
+  # set — the same-token case (transfer / split / merge / freeze / confiscation)
+  # — force every produced token output to that canonical set so a destination
+  # can neither silently strip nor add a capability bit, and so engine selection
+  # follows `ScriptFlags.engine/1` (0.0.11 whenever NFT/AUGMENTABLE is preserved).
+  # A heterogeneous input set (a two-token atomic swap) is left untouched; those
+  # paths carry their own semantics and reject NFT inputs upstream.
+  defp enforce_input_capability_flags(token_inputs, destinations) do
+    case canonical_input_flags(token_inputs) do
+      {:ok, %ScriptFlags{} = flags} ->
+        Enum.map(destinations, &put_capability_flags(&1, flags))
+
+      :mixed ->
+        destinations
+    end
+  end
+
+  # `{:ok, flags}` when every token input decodes as a STAS 3.0 frame carrying an
+  # identical capability-flag set, else `:mixed` (skip enforcement).
+  defp canonical_input_flags(token_inputs) do
+    case Enum.map(token_inputs, &input_capability_flags/1) do
+      [%ScriptFlags{} = first | rest] ->
+        if Enum.all?(rest, &(&1 == first)), do: {:ok, first}, else: :mixed
+
+      _ ->
+        :mixed
+    end
+  end
+
+  # Decoded capability flags of a token input, or nil if it does not parse as a
+  # STAS 3.0 frame (defensive; token inputs are always STAS 3.0 locking scripts).
+  defp input_capability_flags(%{locking_script: %Script{} = script}) do
+    parsed = Reader.read_locking_script(Script.to_binary(script))
+
+    with %{script_type: :stas3, stas3: %{flags: flags}} when not is_nil(flags) <- parsed,
+         {:ok, %ScriptFlags{} = decoded} <- ScriptFlags.decode(flags) do
+      decoded
+    else
+      _ -> nil
+    end
+  end
+
+  defp input_capability_flags(_), do: nil
+
+  # Overwrite a destination's four capability-flag fields with `flags`.
+  defp put_capability_flags(dest, %ScriptFlags{} = flags) do
+    %{
+      dest
+      | freezable: flags.freezable,
+        confiscatable: flags.confiscatable,
+        nft: flags.nft,
+        augmentable: flags.augmentable
+    }
+  end
+
+  # Full capability flags for a destination (spec §15). STAS 3.0 flags are
+  # immutable across a spend, so the caller sets each output's flags to match
+  # its input; the builder encodes all four bits and selects the engine
+  # revision (0.0.11 when NFT/AUGMENTABLE is set, else 0.0.9).
+  defp dest_flags(dest) do
+    %ScriptFlags{
+      freezable: Map.get(dest, :freezable, false),
+      confiscatable: Map.get(dest, :confiscatable, false),
+      nft: Map.get(dest, :nft, false),
+      augmentable: Map.get(dest, :augmentable, false)
+    }
+  end
+
+  # ── §6.4 / §15.2 augmentation directive ──────────────────────────────
+
+  @doc """
+  Verify that a produced token output satisfies the augmentation covenant
+  (spec §6.4 / §15.2) for a spent input.
+
+  The `build_stas3_base_tx` transfer path *auto-appends* the directive so its
+  output is covenant-correct by construction; use this to check a spend built
+  some other way. If `input_locking_script` carries an active augmentation
+  directive — an NFT + AUGMENTABLE frame whose `var2` is `{:augment, data}` —
+  then `output_locking_script` MUST end with the directive data.
+  """
+  @spec verify_augment_directive_appended(binary(), binary()) ::
+          :ok | {:error, :directive_not_appended}
+  def verify_augment_directive_appended(input_locking_script, output_locking_script)
+      when is_binary(input_locking_script) and is_binary(output_locking_script) do
+    case augment_directive_for_script(input_locking_script) do
+      {:ok, data} ->
+        if binary_suffix?(output_locking_script, data),
+          do: :ok,
+          else: {:error, :directive_not_appended}
+
+      :none ->
+        :ok
+    end
+  end
+
+  # The active augmentation directive carried by a spend's inputs, if any:
+  # `data` when a consumed NFT+AUGMENTABLE input's var2 is `{:augment, data}`,
+  # else nil. NFT frames are single-input, so at most one is ever active.
+  defp active_augment_directive(token_inputs) do
+    Enum.find_value(token_inputs, nil, fn ti ->
+      case augment_directive_for_script(Script.to_binary(ti.locking_script)) do
+        {:ok, data} -> data
+        :none -> nil
+      end
+    end)
+  end
+
+  # `{:ok, data}` when a locking script decodes as an NFT+AUGMENTABLE frame whose
+  # var2 is an augmentation directive; `:none` otherwise (inert / absent).
+  defp augment_directive_for_script(script_bin) do
+    case Reader.read_locking_script(script_bin) do
+      %{script_type: :stas3, stas3: %{flags: flags, action_data_parsed: {:augment, data}}} ->
+        case ScriptFlags.decode(flags) do
+          {:ok, %ScriptFlags{nft: true, augmentable: true}} -> {:ok, data}
+          _ -> :none
+        end
+
+      _ ->
+        :none
+    end
+  end
+
+  # Apply the augmentation covenant to a transfer's outputs: append the active
+  # directive data to the first (sole) token output. No-op unless this is a
+  # plain transfer carrying an active directive.
+  defp apply_augment_directive(outputs, config) do
+    if Map.get(config, :spend_type) == :transfer do
+      case active_augment_directive(config.token_inputs) do
+        nil -> outputs
+        data -> append_to_first_output(outputs, data)
+      end
+    else
+      outputs
+    end
+  end
+
+  defp append_to_first_output([first | rest], data) do
+    {:ok, script} = Script.from_binary(Script.to_binary(first.locking_script) <> data)
+    [%{first | locking_script: script} | rest]
+  end
+
+  defp append_to_first_output([], _data), do: []
+
+  defp binary_suffix?(bin, suffix) do
+    s = byte_size(suffix)
+    b = byte_size(bin)
+    b >= s and binary_part(bin, b - s, s) == suffix
+  end
+
   # Run a per-input validator across every token input; halt on first failure.
   defp validate_all(token_inputs, validator) when is_function(validator, 1) do
     Enum.reduce_while(token_inputs, :ok, fn ti, :ok ->
@@ -1233,11 +1538,26 @@ defmodule BSV.Tokens.Factory.Stas3 do
     end)
   end
 
+  # Spec §15: how the §15.1 one-output and §15.2 directive-append covenants
+  # interact with the swap (spendType 1) and confiscation (spendType 3) paths is
+  # not yet pinned, and those builders bypass the normal-transfer NFT guard.
+  # Refuse NFT inputs conservatively rather than risk an on-chain-invalid tx.
+  defp reject_nft_spend_path(token_inputs) do
+    if Enum.any?(token_inputs, &Stas3Validate.nft?/1),
+      do: {:error, :nft_spend_path_unsupported},
+      else: :ok
+  end
+
   # Validate swap inputs: exactly 2, none frozen
   defp validate_swap_inputs(token_inputs) do
     cond do
       length(token_inputs) != 2 ->
         {:error, Error.invalid_destination("swap requires exactly 2 token inputs")}
+
+      # Spec §15: NFT behaviour on the atomic-swap path (spendType 1) is not yet
+      # pinned; refuse NFT legs conservatively.
+      Enum.any?(token_inputs, &Stas3Validate.nft?/1) ->
+        {:error, :nft_spend_path_unsupported}
 
       true ->
         frozen =
@@ -1263,8 +1583,13 @@ defmodule BSV.Tokens.Factory.Stas3 do
   #   * output 3 (if present) = remainder for leg 2 → inherits from input 1
   #
   # We rewrite remainder destinations in-place so the resulting locking script
-  # has both `owner_pkh` and `action_data` (var2) byte-identical to the source
-  # input — preserving the swap descriptor for any unmatched balance.
+  # has `owner_pkh`, `action_data` (var2), AND the four immutable STAS 3.0
+  # capability flags (freezable / confiscatable / nft / augmentable, spec §5.2.2
+  # / §15) byte-identical to the source input. A heterogeneous two-token swap
+  # carries different per-input flags, so `enforce_input_capability_flags/2`
+  # skips it (`:mixed`); each remainder must therefore inherit the capability
+  # set of its OWN source input here, or the covenant identity of the source
+  # token would silently change on the unmatched balance.
   @doc false
   def inherit_swap_remainders(token_inputs, destinations) do
     destinations
@@ -1289,12 +1614,27 @@ defmodule BSV.Tokens.Factory.Stas3 do
     case parsed do
       %{script_type: :stas3, stas3: %{owner: owner} = f} when not is_nil(owner) ->
         action_data = source_action_data(f)
+
         %{dest | owner_pkh: owner, action_data: action_data}
+        |> inherit_source_capability_flags(f)
 
       _ ->
         dest
     end
   end
+
+  # Copy the source input's immutable capability flags onto a remainder
+  # destination (spec §5.2.2 / §15). A frame whose `flags` field is missing or
+  # undecodable leaves the destination's flags untouched (defensive; token
+  # inputs always carry a valid flags byte).
+  defp inherit_source_capability_flags(dest, %{flags: flags}) when not is_nil(flags) do
+    case ScriptFlags.decode(flags) do
+      {:ok, %ScriptFlags{} = decoded} -> put_capability_flags(dest, decoded)
+      _ -> dest
+    end
+  end
+
+  defp inherit_source_capability_flags(dest, _), do: dest
 
   # Recover the original action_data tuple from a parsed STAS 3.0 frame.
   defp source_action_data(%{action_data_parsed: nil, action_data_raw: <<>>}), do: nil
