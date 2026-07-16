@@ -31,25 +31,25 @@ defmodule BSV.Crypto do
   True constant-time binary comparison.
 
   Prevents timing side-channel attacks when comparing secrets (HMACs, keys, etc.).
-  Returns `true` if both binaries are equal, `false` otherwise.
-  Runtime is independent of both content AND length differences.
+  Returns `true` if and only if both binaries are byte-for-byte equal, `false`
+  otherwise (including any length difference). Runtime is independent of both
+  content AND length differences.
 
-  Uses a single SHA-256 hash of `a <> b` and `b <> a` to eliminate all
-  length-based timing variability, then performs byte-level XOR accumulation.
+  Each input is first reduced to its 32-byte SHA-256 digest, then the two
+  digests are compared in constant time. Because the digests are always the same
+  length, the comparison leaks nothing about the inputs' lengths; and because
+  SHA-256 is collision-resistant, `SHA256(a) == SHA256(b)` iff `a == b` — so
+  inputs of different length or content produce different digests and compare
+  unequal.
   """
   @spec secure_compare(binary(), binary()) :: boolean()
   def secure_compare(a, b) when is_binary(a) and is_binary(b) do
-    # Technique: hash both concatenations to make timing fully independent of
-    # length differences.  We compute two hashes:
-    #   ha = SHA256(a <> b)
-    #   hb = SHA256(b <> a)
-    # If a == b then ha == hb.  The SHA-256 algorithm processes fixed 64-byte
-    # blocks with padding, so the runtime of :crypto.hash/2 is constant for
-    # any two inputs of a given *concatenated* length.  By hashing both orderings
-    # we avoid leaking which input is longer.
-
-    ha = :crypto.hash(:sha256, a <> b)
-    hb = :crypto.hash(:sha256, b <> a)
+    # Hash EACH input separately (NOT the concatenations `a <> b` / `b <> a`,
+    # which are equal whenever the pieces commute — e.g. "" <> "x" == "x" <> "",
+    # so unequal inputs would compare equal). Two equal-length digests can then
+    # be compared in constant time.
+    ha = :crypto.hash(:sha256, a)
+    hb = :crypto.hash(:sha256, b)
 
     if function_exported?(:crypto, :hash_equals, 2) do
       :crypto.hash_equals(ha, hb)

@@ -108,7 +108,8 @@ defmodule BSV.PrivateKey do
   Uses OpenSSL-backed `:crypto.compute_key/4` for security (includes curve
   validation) and performance. Returns the shared point as a compressed public key.
   """
-  @spec derive_shared_secret(t(), BSV.PublicKey.t()) :: {:ok, BSV.PublicKey.t()} | {:error, String.t()}
+  @spec derive_shared_secret(t(), BSV.PublicKey.t()) ::
+          {:ok, BSV.PublicKey.t()} | {:error, String.t()}
   def derive_shared_secret(%__MODULE__{raw: raw}, %BSV.PublicKey{} = pub_key) do
     # Decompress to get the 65-byte uncompressed point for :crypto
     {:ok, decompressed} = BSV.PublicKey.decompress(pub_key)
@@ -141,9 +142,12 @@ defmodule BSV.PrivateKey do
         {:ok, %BSV.PublicKey{point: <<0x02, x_padded::binary>>}}
       end
     rescue
-      e in [ErlangError] -> {:error, "ECDH computation failed: #{inspect(e)}"}
-      e in [ArgumentError] -> {:error, "ECDH computation failed: #{inspect(e)}"}
-      # :crypto.compute_key can raise :badarg or match failures on invalid curve points
+      e in [ErlangError] ->
+        {:error, "ECDH computation failed: #{inspect(e)}"}
+
+      e in [ArgumentError] ->
+        {:error, "ECDH computation failed: #{inspect(e)}"}
+        # :crypto.compute_key can raise :badarg or match failures on invalid curve points
     end
   end
 
@@ -176,5 +180,4 @@ defmodule BSV.PrivateKey do
 
   defp pad_to(bin, len) when byte_size(bin) >= len, do: bin
   defp pad_to(bin, len), do: :binary.copy(<<0>>, len - byte_size(bin)) <> bin
-
 end

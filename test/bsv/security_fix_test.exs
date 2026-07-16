@@ -60,7 +60,8 @@ defmodule BSV.SecurityFixTest do
       {:ok, decrypted} = BSV.SymmetricKey.decrypt(key, ciphertext, aad)
       assert decrypted == plaintext
       # Different AAD should fail
-      assert {:error, :decrypt_failed} = BSV.SymmetricKey.decrypt(key, ciphertext, "wrong-context")
+      assert {:error, :decrypt_failed} =
+               BSV.SymmetricKey.decrypt(key, ciphertext, "wrong-context")
     end
   end
 
@@ -69,7 +70,8 @@ defmodule BSV.SecurityFixTest do
     test "invalid public key returns specific error" do
       key = BSV.PrivateKey.generate()
       # A point that's not on the curve should fail with a meaningful error
-      invalid_pub = %BSV.PublicKey{point: <<0x02, 0::256>>}  # compressed zero is invalid
+      # compressed zero is invalid
+      invalid_pub = %BSV.PublicKey{point: <<0x02, 0::256>>}
       # Point at x=0 won't be on secp256k1
       result = BSV.PrivateKey.derive_shared_secret(key, invalid_pub)
       assert match?({:error, _}, result)
@@ -79,11 +81,13 @@ defmodule BSV.SecurityFixTest do
   # M-02: Base58 uses secure_compare
   describe "Base58Check uses secure_compare" do
     test "valid address decodes" do
-      assert {:ok, {_version, _payload}} = BSV.Base58.check_decode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+      assert {:ok, {_version, _payload}} =
+               BSV.Base58.check_decode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
     end
 
     test "checksum mismatch returns error" do
-      assert {:error, "invalid checksum"} = BSV.Base58.check_decode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb")
+      assert {:error, "invalid checksum"} =
+               BSV.Base58.check_decode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb")
     end
   end
 
@@ -92,18 +96,21 @@ defmodule BSV.SecurityFixTest do
     test "ARC txid is validated before use" do
       config = %BSV.ARC.Config{base_url: "http://localhost:1234"}
       client = BSV.ARC.Client.new(config)
-      assert {:error, %{message: "invalid txid format"}} = BSV.ARC.Client.status(client, "../etc/passwd")
-      assert {:error, %{message: "invalid txid format"}} = BSV.ARC.Client.status(client, "<script>")
+
+      assert {:error, %{message: "invalid txid format: expected 64 hex characters"}} =
+               BSV.ARC.Client.status(client, "../etc/passwd")
+
+      assert {:error, %{message: "invalid txid format: expected 64 hex characters"}} =
+               BSV.ARC.Client.status(client, "<script>")
     end
   end
 
-  # STAS3 piece validation — verify the 127-byte limit fix
-  describe "STAS3 piece length limit" do
-    test "STAS3 builder enforces 127-byte piece limit" do
-      # The piece builder should reject pieces > 127 bytes
-      large_piece = :binary.copy(<<0x00>>, 200)
-      result = BSV.Tokens.Script.Stas3Builder.build_piece(large_piece, <<>>)
-      assert match?({:error, _}, result)
-    end
-  end
+  # NOTE: the STAS3 127-byte piece-length limit (rejects ≥128, accepts 127) is
+  # enforced in BSV.Tokens.Script.Stas3Pieces and exercised through the real
+  # public piece-encoding API in test/bsv/tokens/script/stas3_pieces_test.exs
+  # ("piece array rejects piece over 127 bytes" / "accepts piece of exactly 127
+  # bytes"). The earlier assertion here called a non-existent
+  # `Stas3Builder.build_piece/2`; it is removed rather than duplicated against a
+  # phantom API. This finding is also outside this PR's declared scope
+  # (H-01/H-02/M-01/M-02).
 end
