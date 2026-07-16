@@ -428,6 +428,121 @@ defmodule BSV.Tokens.Factory.Stas3Test do
     assert parsed.stas3.frozen == false
   end
 
+  # ── note 2245 — freeze / unfreeze must preserve a non-empty var2 ──
+  # Spec §6.2: freezing a UTXO that carries a swap descriptor (or any non-empty
+  # var2) must wrap the original inside the freeze marker (`0x02 ‖ original`),
+  # and unfreeze must recover it byte-for-byte — never drop it.
+
+  defp freeze_test_swap_fields do
+    %{
+      requested_script_hash: :binary.copy(<<0x07>>, 32),
+      requested_pkh: :binary.copy(<<0x08>>, 20),
+      rate_numerator: 3,
+      rate_denominator: 5
+    }
+  end
+
+  # STAS3 locking script whose var2 carries a legacy 61-byte swap leg, built at
+  # the given `frozen?` state (frozen wraps the swap in the §6.2 freeze marker).
+  defp make_freeze_test_swap_locking(owner_pkh, redemption_pkh, frozen?) do
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(
+        owner_pkh,
+        redemption_pkh,
+        {:swap, freeze_test_swap_fields()},
+        frozen?,
+        true,
+        [],
+        []
+      )
+
+    script
+  end
+
+  defp freeze_unfreeze_config(fee_key, token_input, dest) do
+    %{
+      token_inputs: [token_input],
+      fee_txid: dummy_hash(),
+      fee_vout: 1,
+      fee_satoshis: 50_000,
+      fee_locking_script: p2pkh_script(fee_key),
+      fee_private_key: fee_key,
+      destinations: [dest],
+      spend_type: :transfer,
+      fee_rate: 500
+    }
+  end
+
+  test "freeze preserves a non-empty (swap-descriptor) var2 in the frozen marker" do
+    fee_key = test_key()
+    owner_pkh = :binary.copy(<<0x11>>, 20)
+    redemption_pkh = :binary.copy(<<0x22>>, 20)
+
+    token_input = %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: 5_000,
+      locking_script: make_freeze_test_swap_locking(owner_pkh, redemption_pkh, false),
+      private_key: test_key()
+    }
+
+    dest = %Stas3OutputParams{
+      satoshis: 5_000,
+      owner_pkh: owner_pkh,
+      redemption_pkh: redemption_pkh,
+      frozen: false,
+      freezable: true,
+      action_data: nil,
+      service_fields: [],
+      optional_data: []
+    }
+
+    {:ok, tx} = Stas3.build_stas3_freeze_tx(freeze_unfreeze_config(fee_key, token_input, dest))
+
+    parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+    assert parsed.stas3.frozen == true
+    # The original swap var2 is preserved under the 0x02 freeze byte...
+    assert <<0x02, _::binary>> = parsed.stas3.action_data_raw
+    # ...and is fully recoverable as the pre-freeze swap descriptor.
+    assert parsed.stas3.action_data_parsed == {:swap, freeze_test_swap_fields()}
+    assert parsed.stas3.swap_descriptor != nil
+  end
+
+  test "unfreeze recovers the original non-empty var2 from a frozen swap frame" do
+    fee_key = test_key()
+    owner_pkh = :binary.copy(<<0x11>>, 20)
+    redemption_pkh = :binary.copy(<<0x22>>, 20)
+
+    # Source UTXO is FROZEN with a swap descriptor wrapped in the freeze marker.
+    token_input = %TokenInput{
+      txid: dummy_hash(),
+      vout: 0,
+      satoshis: 5_000,
+      locking_script: make_freeze_test_swap_locking(owner_pkh, redemption_pkh, true),
+      private_key: test_key()
+    }
+
+    dest = %Stas3OutputParams{
+      satoshis: 5_000,
+      owner_pkh: owner_pkh,
+      redemption_pkh: redemption_pkh,
+      frozen: true,
+      freezable: true,
+      action_data: nil,
+      service_fields: [],
+      optional_data: []
+    }
+
+    {:ok, tx} = Stas3.build_stas3_unfreeze_tx(freeze_unfreeze_config(fee_key, token_input, dest))
+
+    parsed = Reader.read_locking_script(Script.to_binary(Enum.at(tx.outputs, 0).locking_script))
+    assert parsed.stas3.frozen == false
+    # The freeze marker is gone and the raw swap var2 is restored verbatim.
+    assert <<0x01, _::binary>> = parsed.stas3.action_data_raw
+    assert parsed.stas3.action_data_parsed == {:swap, freeze_test_swap_fields()}
+    assert parsed.stas3.swap_descriptor != nil
+  end
+
   # ── note 2235 §4 — freeze / unfreeze is a single-UTXO spend ──
   # `Stas3Validate.freeze/2` only checks `hd(token_inputs)`, but the base builder
   # signs every token input. A second, unvalidated token input must be rejected

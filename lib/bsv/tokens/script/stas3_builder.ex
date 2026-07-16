@@ -82,26 +82,6 @@ defmodule BSV.Tokens.Script.Stas3Builder do
           [binary()],
           [binary()]
         ) :: {:ok, BSV.Script.t()} | {:error, term()}
-  # A frozen frame carries the freeze marker (OP_2) in var2, which *replaces*
-  # any action data (spec §6.2). `frozen: true` together with non-nil action data
-  # is therefore contradictory: the current model cannot represent both, and a
-  # frozen token is unspendable so its directive/swap data is inert anyway.
-  # Reject the combination explicitly rather than silently emit an unfrozen
-  # script whose action data the reader would misclassify as not-frozen.
-  def build_stas3_locking_script_with_engine(
-        _owner_pkh,
-        _redemption_pkh,
-        action_data,
-        true,
-        _freezable_or_flags,
-        _engine,
-        _service_fields,
-        _optional_data
-      )
-      when not is_nil(action_data) do
-    {:error, :frozen_with_action_data_unsupported}
-  end
-
   def build_stas3_locking_script_with_engine(
         <<owner_pkh::binary-size(20)>>,
         <<redemption_pkh::binary-size(20)>>,
@@ -119,33 +99,14 @@ defmodule BSV.Tokens.Script.Stas3Builder do
     # 1. Push owner PKH (OP_DATA_20 + 20 bytes)
     script = script <> <<0x14>> <> owner_pkh
 
-    # 2. Action data encoding
-    script =
-      case {frozen, action_data} do
-        {false, nil} ->
-          script <> <<0x00>>
-
-        {true, nil} ->
-          script <> <<0x52>>
-
-        # STAS 3.0 v0.1 §6.3 recursive swap descriptor: a full
-        # SwapDescriptor struct (possibly carrying a `next` chain) is
-        # encoded directly via SwapDescriptor.to_var2_bytes/1.
-        {_, {:swap, %BSV.Tokens.SwapDescriptor{} = descriptor}} ->
-          script <> push_data(BSV.Tokens.SwapDescriptor.to_var2_bytes(descriptor))
-
-        # Legacy 61-byte non-recursive swap_fields() map.
-        {_, {:swap, %{} = fields}} ->
-          script <> push_data(encode_swap_action_data(fields))
-
-        # Augmentation directive (spec §6.4 / §15.2): action byte 0x03 followed
-        # by the data the next spend of an NFT+AUGMENTABLE frame must append.
-        {_, {:augment, data}} ->
-          script <> push_data(<<0x03>> <> data)
-
-        {_, {:custom, bytes}} ->
-          script <> push_data(bytes)
-      end
+    # 2. var2 (action data) encoding — spec §6.2 / §6.3 / §6.4.
+    #
+    # An UNfrozen frame pushes the raw action-data payload (empty push when
+    # there is none). A FROZEN frame carries the freeze marker: bare `OP_2`
+    # (0x52) when var2 was empty, else `push(0x02 ‖ original_payload)` so the
+    # original swap-descriptor / augment / custom var2 is preserved inside the
+    # frozen marker and can be recovered on unfreeze (mirrors `freeze_var2/1`).
+    script = script <> encode_var2(frozen, action_data)
 
     # 3. Base template
     script = script <> base_template
@@ -187,6 +148,34 @@ defmodule BSV.Tokens.Script.Stas3Builder do
 
   def build_stas3_flags(true), do: <<0x01>>
   def build_stas3_flags(false), do: <<0x00>>
+
+  # Encode the var2 field (owner-adjacent action-data push) of a STAS 3.0
+  # locking script (spec §6.2). `frozen` selects the freeze-marker form;
+  # `action_data` is the unfrozen `ActionData.t()` (or nil for an empty var2).
+  # Returns the wire bytes of the single var2 push instruction.
+  defp encode_var2(frozen, action_data),
+    do: encode_var2_payload(frozen, action_data_payload_or_empty(action_data))
+
+  # Empty payload freezes to bare `OP_2`; a non-empty payload freezes to
+  # `push(0x02 ‖ payload)` so the original var2 survives inside the marker.
+  defp encode_var2_payload(false, <<>>), do: <<0x00>>
+  defp encode_var2_payload(true, <<>>), do: <<0x52>>
+  defp encode_var2_payload(false, payload), do: push_data(payload)
+  defp encode_var2_payload(true, payload), do: push_data(<<0x02>> <> payload)
+
+  defp action_data_payload_or_empty(nil), do: <<>>
+  defp action_data_payload_or_empty(action_data), do: action_data_payload(action_data)
+
+  # Raw var2 payload bytes for an `ActionData.t()` (WITHOUT push framing or the
+  # freeze marker). A full §6.3 recursive `SwapDescriptor` emits its complete
+  # encoding; the legacy 61-byte swap_fields map emits its non-recursive form;
+  # an augment directive emits `0x03 ‖ data`; custom carries its bytes verbatim.
+  defp action_data_payload({:swap, %BSV.Tokens.SwapDescriptor{} = descriptor}),
+    do: BSV.Tokens.SwapDescriptor.to_var2_bytes(descriptor)
+
+  defp action_data_payload({:swap, %{} = fields}), do: encode_swap_action_data(fields)
+  defp action_data_payload({:augment, data}), do: <<0x03>> <> data
+  defp action_data_payload({:custom, bytes}), do: bytes
 
   @doc "Push data with appropriate length prefix."
   @spec push_data(binary()) :: binary()

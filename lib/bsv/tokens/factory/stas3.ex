@@ -475,16 +475,27 @@ defmodule BSV.Tokens.Factory.Stas3 do
   """
   @spec build_stas3_freeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_freeze_tx(config) do
-    frozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: true} end)
+    with :ok <- check_single_freeze_input(config.token_inputs) do
+      # Spec §6.2 / §9.2: a freeze must preserve the source UTXO's original
+      # `var2`. Carry it into every destination as the pre-freeze action data;
+      # the builder wraps it in the frozen marker (`0x02 ‖ original`, or bare
+      # `OP_2` for an empty var2) so a swap-descriptor / augment / custom var2 is
+      # never silently dropped.
+      frozen_action_data = frozen_var2_from_source(hd(config.token_inputs))
 
-    with :ok <- check_single_freeze_input(config.token_inputs),
-         :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
-      build_stas3_base_tx(
-        config
-        |> Map.put(:spend_type, :freeze_unfreeze)
-        |> Map.put(:destinations, frozen_dests)
-        |> Map.put_new(:tx_type, :regular)
-      )
+      frozen_dests =
+        Enum.map(config.destinations, fn d ->
+          %{d | frozen: true, action_data: frozen_action_data}
+        end)
+
+      with :ok <- Stas3Validate.freeze(hd(config.token_inputs), frozen_dests) do
+        build_stas3_base_tx(
+          config
+          |> Map.put(:spend_type, :freeze_unfreeze)
+          |> Map.put(:destinations, frozen_dests)
+          |> Map.put_new(:tx_type, :regular)
+        )
+      end
     end
   end
 
@@ -497,16 +508,26 @@ defmodule BSV.Tokens.Factory.Stas3 do
   """
   @spec build_stas3_unfreeze_tx(base_config()) :: {:ok, Transaction.t()} | {:error, term()}
   def build_stas3_unfreeze_tx(config) do
-    unfrozen_dests = Enum.map(config.destinations, fn d -> %{d | frozen: false} end)
+    with :ok <- check_single_freeze_input(config.token_inputs) do
+      # Spec §6.2 / §9.2: recover the original `var2` wrapped inside the frozen
+      # source marker so the unfrozen output round-trips the pre-freeze state.
+      # A frozen non-empty frame reads back as `0x02 ‖ original`; an empty /
+      # bare-`OP_2` frame recovers to no var2 (nil).
+      unfrozen_action_data = unfrozen_var2_from_source(hd(config.token_inputs))
 
-    with :ok <- check_single_freeze_input(config.token_inputs),
-         :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
-      build_stas3_base_tx(
-        config
-        |> Map.put(:spend_type, :freeze_unfreeze)
-        |> Map.put(:destinations, unfrozen_dests)
-        |> Map.put_new(:tx_type, :regular)
-      )
+      unfrozen_dests =
+        Enum.map(config.destinations, fn d ->
+          %{d | frozen: false, action_data: unfrozen_action_data}
+        end)
+
+      with :ok <- Stas3Validate.freeze(hd(config.token_inputs), unfrozen_dests) do
+        build_stas3_base_tx(
+          config
+          |> Map.put(:spend_type, :freeze_unfreeze)
+          |> Map.put(:destinations, unfrozen_dests)
+          |> Map.put_new(:tx_type, :regular)
+        )
+      end
     end
   end
 
@@ -517,6 +538,47 @@ defmodule BSV.Tokens.Factory.Stas3 do
   # freeze/unfreeze covenant.
   defp check_single_freeze_input([_single]), do: :ok
   defp check_single_freeze_input(_), do: {:error, :freeze_input_count}
+
+  # Spec §6.2: recover the source UTXO's original (unfrozen) `var2` payload so a
+  # freeze can preserve it inside the frozen marker. Returns a `{:custom, raw}`
+  # ActionData carrying the exact original bytes, or nil for an empty var2
+  # (which freezes to the bare `OP_2` marker).
+  defp frozen_var2_from_source(token_input) do
+    case source_stas3_fields(token_input) do
+      %{frozen: false, action_data_raw: raw} when is_binary(raw) and byte_size(raw) > 0 ->
+        {:custom, raw}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Spec §6.2: recover the original `var2` wrapped inside a frozen source UTXO so
+  # an unfreeze restores it. A frozen non-empty frame reads back as
+  # `0x02 ‖ original`; strip the freeze byte to recover the original payload
+  # (as `{:custom, original}`). A bare-`OP_2` (empty original) frame recovers to
+  # nil (no var2).
+  defp unfrozen_var2_from_source(token_input) do
+    case source_stas3_fields(token_input) do
+      %{frozen: true, action_data_raw: <<0x02, original::binary>>}
+      when byte_size(original) >= 1 ->
+        {:custom, original}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Parsed STAS 3.0 fields for a token input's locking script, or nil when it is
+  # not a STAS 3.0 frame (defensive; freeze/unfreeze inputs are always STAS 3.0).
+  defp source_stas3_fields(%{locking_script: %Script{} = script}) do
+    case Reader.read_locking_script(Script.to_binary(script)) do
+      %{script_type: :stas3, stas3: %{} = fields} -> fields
+      _ -> nil
+    end
+  end
+
+  defp source_stas3_fields(_), do: nil
 
   @doc """
   Build a STAS3 split transaction.

@@ -31,47 +31,59 @@ defmodule BSV.Tokens.Script.Stas3BuilderTest do
     assert parsed.stas3.frozen == true
   end
 
-  # Spec §6.2: a frozen frame's var2 is the freeze marker, which replaces any
-  # action data — so frozen + non-nil action data is contradictory and rejected
-  # rather than silently producing a script the reader would read as unfrozen.
-  test "frozen + action data is rejected for every action variant" do
+  # Spec §6.2: a frozen frame preserves the original var2 inside the freeze
+  # marker (`push(0x02 ‖ original)`), so freezing a non-empty var2 must NOT drop
+  # it. The reader classifies the frame as frozen AND exposes the recoverable
+  # pre-freeze action data.
+  test "frozen + non-empty action data is preserved and read back as frozen" do
     owner = :binary.copy(<<0x01>>, 20)
     redemption = :binary.copy(<<0x02>>, 20)
 
-    for action <- [
-          {:custom, <<0x99>>},
-          {:augment, <<0x03, 0xAA>>},
-          {:swap,
-           %{
-             requested_script_hash: :binary.copy(<<0>>, 32),
-             requested_pkh: :binary.copy(<<0>>, 20),
-             rate_numerator: 1,
-             rate_denominator: 1
-           }}
-        ] do
-      assert Stas3Builder.build_stas3_locking_script(
-               owner,
-               redemption,
-               action,
-               true,
-               true,
-               [],
-               []
-             ) ==
-               {:error, :frozen_with_action_data_unsupported}
-    end
+    swap_fields = %{
+      requested_script_hash: :binary.copy(<<0x07>>, 32),
+      requested_pkh: :binary.copy(<<0x08>>, 20),
+      rate_numerator: 3,
+      rate_denominator: 5
+    }
 
-    # The same action data on an UNfrozen frame still builds fine.
-    assert {:ok, _} =
-             Stas3Builder.build_stas3_locking_script(
-               owner,
-               redemption,
-               {:custom, <<0x99>>},
-               false,
-               true,
-               [],
-               []
-             )
+    for {action, expected_parsed} <- [
+          {{:custom, <<0x99, 0x88>>}, {:custom, <<0x99, 0x88>>}},
+          {{:augment, <<0xAA, 0xBB>>}, {:augment, <<0xAA, 0xBB>>}},
+          {{:swap, swap_fields}, {:swap, swap_fields}}
+        ] do
+      {:ok, frozen_script} =
+        Stas3Builder.build_stas3_locking_script(owner, redemption, action, true, true, [], [])
+
+      frozen = Reader.read_locking_script(BSV.Script.to_binary(frozen_script))
+      assert frozen.stas3.frozen == true
+      # The on-script var2 payload begins with the 0x02 freeze byte.
+      assert <<0x02, _::binary>> = frozen.stas3.action_data_raw
+      # The recoverable pre-freeze action data is exposed.
+      assert frozen.stas3.action_data_parsed == expected_parsed
+
+      # The SAME action data on an UNfrozen frame reads back without the marker.
+      {:ok, unfrozen_script} =
+        Stas3Builder.build_stas3_locking_script(owner, redemption, action, false, true, [], [])
+
+      unfrozen = Reader.read_locking_script(BSV.Script.to_binary(unfrozen_script))
+      assert unfrozen.stas3.frozen == false
+      assert unfrozen.stas3.action_data_parsed == expected_parsed
+    end
+  end
+
+  # An empty var2 still freezes to the bare `OP_2` marker (spec §6.2), not
+  # `push(0x02)`.
+  test "frozen + empty var2 emits the bare OP_2 marker" do
+    owner = :binary.copy(<<0x01>>, 20)
+    redemption = :binary.copy(<<0x02>>, 20)
+
+    {:ok, script} =
+      Stas3Builder.build_stas3_locking_script(owner, redemption, nil, true, true, [], [])
+
+    parsed = Reader.read_locking_script(BSV.Script.to_binary(script))
+    assert parsed.stas3.frozen == true
+    assert parsed.stas3.action_data_raw == <<0x52>>
+    assert parsed.stas3.action_data_parsed == nil
   end
 
   test "build flags freezable" do

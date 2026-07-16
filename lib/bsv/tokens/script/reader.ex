@@ -300,50 +300,22 @@ defmodule BSV.Tokens.Script.Reader do
             _ -> []
           end
 
-        frozen = action_data_raw == <<0x52>>
+        # Spec §6.2 freeze marker classification. A frozen frame's var2 is
+        # either the bare `OP_2` marker (var2 read as `<<0x52>>`, empty original)
+        # or a `push(0x02 ‖ original)` whose payload begins with the `0x02`
+        # freeze byte and carries ≥1 further byte (frozen non-empty). In both
+        # cases the frame is frozen; `effective_var2` is the RECOVERED original
+        # payload, so `action_data_parsed` / `swap_descriptor` expose the
+        # recoverable pre-freeze state rather than the raw marker bytes.
+        {frozen, effective_var2} = classify_frozen_var2(action_data_raw)
 
-        action_data_parsed =
-          case action_data_raw do
-            <<0x01, _::binary>> = swap_data ->
-              case BSV.Tokens.Script.Stas3Builder.decode_swap_action_data(swap_data) do
-                {:ok, fields} -> {:swap, fields}
-                _ -> {:custom, swap_data}
-              end
-
-            <<0x52>> ->
-              nil
-
-            nil ->
-              nil
-
-            <<>> ->
-              nil
-
-            # Augmentation directive (spec §6.4 / §15.2): action byte 0x03
-            # followed by ≥1 data byte. Checked before the generic fallback; a
-            # bare 0x03 (no data) is inert and falls through to :custom.
-            <<0x03, rest::binary>> when byte_size(rest) >= 1 ->
-              {:augment, rest}
-
-            other ->
-              {:custom, other}
-          end
+        action_data_parsed = parse_var2_action(effective_var2)
 
         # STAS 3.0 v0.1 §6.3: parse the FULL recursive swap descriptor
-        # (including any `next` chain) when the var2 push is a swap
+        # (including any `next` chain) when the recovered var2 is a swap
         # action (leading 0x01). Independent of the legacy 61-byte
         # `action_data_parsed` projection above.
-        swap_descriptor =
-          case action_data_raw do
-            <<0x01, _::binary>> = swap_data ->
-              case BSV.Tokens.SwapDescriptor.parse(swap_data) do
-                {:ok, descriptor} -> descriptor
-                _ -> nil
-              end
-
-            _ ->
-              nil
-          end
+        swap_descriptor = parse_var2_swap_descriptor(effective_var2)
 
         %ParsedScript{
           script_type: :stas3,
@@ -365,6 +337,46 @@ defmodule BSV.Tokens.Script.Reader do
         %ParsedScript{script_type: :unknown}
     end
   end
+
+  # Classify a raw var2 payload against the spec §6.2 freeze marker, returning
+  # `{frozen?, effective_var2}` where `effective_var2` is the recovered original
+  # payload (empty for a frozen empty frame). A non-empty frozen frame reads back
+  # as `0x02 ‖ original`; strip the freeze byte to recover the original.
+  defp classify_frozen_var2(<<0x52>>), do: {true, <<>>}
+
+  defp classify_frozen_var2(<<0x02, original::binary>>) when byte_size(original) >= 1,
+    do: {true, original}
+
+  defp classify_frozen_var2(nil), do: {false, <<>>}
+  defp classify_frozen_var2(raw) when is_binary(raw), do: {false, raw}
+
+  # Parse a (recovered) var2 payload into the legacy `ActionData.t()` projection.
+  defp parse_var2_action(<<>>), do: nil
+
+  defp parse_var2_action(<<0x01, _::binary>> = swap_data) do
+    case BSV.Tokens.Script.Stas3Builder.decode_swap_action_data(swap_data) do
+      {:ok, fields} -> {:swap, fields}
+      _ -> {:custom, swap_data}
+    end
+  end
+
+  # Augmentation directive (spec §6.4 / §15.2): action byte 0x03 followed by ≥1
+  # data byte. Checked before the generic fallback; a bare 0x03 (no data) is
+  # inert and falls through to :custom.
+  defp parse_var2_action(<<0x03, rest::binary>>) when byte_size(rest) >= 1, do: {:augment, rest}
+
+  defp parse_var2_action(other), do: {:custom, other}
+
+  # Parse a (recovered) var2 payload into the full §6.3 recursive swap
+  # descriptor, or nil when it is not a swap action.
+  defp parse_var2_swap_descriptor(<<0x01, _::binary>> = swap_data) do
+    case BSV.Tokens.SwapDescriptor.parse(swap_data) do
+      {:ok, descriptor} -> descriptor
+      _ -> nil
+    end
+  end
+
+  defp parse_var2_swap_descriptor(_), do: nil
 
   defp p2pkh?(<<0x76, 0xA9, 0x14, _pkh::binary-size(20), 0x88, 0xAC>>),
     do: true
